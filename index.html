@@ -172,6 +172,36 @@ const Config = {
   C_AXIS_HEAD_O: 0.05,       // fainter axis in the reserved headroom (anticipation)
   DPR_CAP:     2,
 
+  // ---- Field (brief 3.3): horizontal particle thread system, lower frame ----
+  // Flows left -> right through the disc-stack zone. Turbulent upstream; only
+  // minimal coherence downstream at idle. The reserved headroom stays EMPTY.
+  FIELD_TOP_FRAC:    0.42,   // band region top (well below the reserved headroom)
+  FIELD_BOTTOM_FRAC: 0.93,   // band region bottom
+  FIELD_BANDS:       4,      // visible thread bands (range 3-5)
+  FIELD_COUNT:       3200,   // particle target on desktop (range 2500-4000)
+  FIELD_COUNT_MIN:   2500,   // floor after viewport-width scaling
+  FIELD_SPEED:       26,     // base flow speed, px/sec, left -> right
+  FIELD_SPEED_VAR:   0.45,   // seeded +/- speed variation
+  FIELD_AMP:         46,     // upstream turbulence amplitude (px)
+  FIELD_BAND_SPREAD: 0.34,   // particle scatter within a lane (frac of lane gap)
+  NOISE_FREQ_X:  0.0016,     // horizontal noise frequency (per px)
+  NOISE_FREQ_Y:  0.010,      // vertical noise frequency (per px)
+  NOISE_FREQ_X2: 0.0041,     // second octave (finer turbulence)
+  NOISE_TIME:    0.055,      // noise drift (per sec)
+  COH_IDLE_BASE: 0.06,       // minimal downstream coherence at idle (scalar ~ 0)
+  FIELD_DOT_ALPHA: 0.34,     // per-particle luminance
+  FIELD_DOT_SIZE:  1.25,     // px (pre-DPR)
+  FIELD_SEED_OFFSET: 0x1f83, // field PRNG stream, independent of layout/flicker
+
+  // ---- Idle flicker (brief 3.2): seats breathe; discs stay static line work --
+  FLICKER_DEPTH:    0.34,    // opacity modulation depth (frac of base)
+  FLICKER_RATE:     0.62,    // base breathing angular rate (rad/sec, low freq)
+  FLICKER_RATE_VAR: 0.5,     // seeded +/- rate variation
+  PULSE_PERIOD_MIN: 13,      // coordinated single-disc pulse period (sec)
+  PULSE_PERIOD_MAX: 24,
+  PULSE_DUR:        1.7,     // pulse envelope duration (sec)
+  PULSE_GAIN:       0.5,     // added brightness at pulse peak (frac of base)
+
   SEED: 0x4155_4d58,         // fixed seed "AUMX" -> deterministic idle (brief 3.2)
 };
 
@@ -207,6 +237,15 @@ const Geometry = {
       const seats = this._seats(d, cx, cy, rx, ry, prng);
       return { ...d, cx, cy, rx, ry, seats };
     });
+
+    // per-disc coordinated pulse schedule (occasional, seeded, deterministic)
+    for (const d of this.discs) {
+      d.pulse = {
+        period: Config.PULSE_PERIOD_MIN + prng() * (Config.PULSE_PERIOD_MAX - Config.PULSE_PERIOD_MIN),
+        phase: prng(),     // 0..1 offset into the period
+        v: 0,              // current pulse contribution, updated per frame
+      };
+    }
 
     // Central spine: through the stack, then extended up into the reserved
     // headroom (AMENDMENT 3) to imply the future element that arrives above.
@@ -245,6 +284,10 @@ const Geometry = {
         r: Config.SEAT_HEX_BASE * dScale * fore,
         front,
         op,
+        // seeded idle-flicker params (deterministic breathing, brief 3.2 / C-5)
+        phase: prng() * Math.PI * 2,
+        rate: Config.FLICKER_RATE * (1 + (prng() * 2 - 1) * Config.FLICKER_RATE_VAR),
+        _outer: null, _inner: null,   // SVG refs attached by Scene
       });
     }
     // draw back-to-front so front seats overlap correctly
@@ -340,47 +383,202 @@ const Scene = {
       const seat = el("g", { "data-seat": s.id });
       seat.setAttribute("role", "img");
       seat.setAttribute("aria-label", "Seat " + s.seatNo + ", " + d.name + " disc");
-      seat.appendChild(el("polygon", {        // outer instrument body
+      s._outer = el("polygon", {              // outer instrument body
         points: hexPoints(s.x, s.y, s.r, Config.SEAT_HEX_SQUASH),
         fill: "none", stroke: L, "stroke-opacity": s.op.toFixed(3), "stroke-width": "1",
-      }));
-      seat.appendChild(el("polygon", {        // inner hex geometry
+      });
+      s._inner = el("polygon", {              // inner hex geometry
         points: hexPoints(s.x, s.y, s.r * Config.SEAT_INNER_RATIO, Config.SEAT_HEX_SQUASH),
         fill: "none", stroke: L,
         "stroke-opacity": (s.op * Config.SEAT_O_INNER).toFixed(3), "stroke-width": "0.7",
-      }));
+      });
+      seat.appendChild(s._outer);
+      seat.appendChild(s._inner);
       sg.appendChild(seat);
     }
     svg.appendChild(sg);
   },
 };
 
-/* ---- Field (Canvas 2D): Phase 2 will animate particles here -----------------
-   Phase 1 paints only the obsidian base with a faint shallow band so structure
-   and signal can later share one band (brief 3.1). No animation yet.           */
+/* ---- Noise: seeded 2D simplex (deterministic; no Math.random - C-5) --------- */
+function makeNoise2D(seed) {
+  const r = mulberry32(seed);
+  const p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+  for (let i = 255; i > 0; i--) {           // seeded Fisher-Yates shuffle
+    const j = (r() * (i + 1)) | 0;
+    const t = p[i]; p[i] = p[j]; p[j] = t;
+  }
+  const perm = new Uint8Array(512), pm12 = new Uint8Array(512);
+  for (let i = 0; i < 512; i++) { perm[i] = p[i & 255]; pm12[i] = perm[i] % 12; }
+  const g = [[1,1],[-1,1],[1,-1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
+  const F2 = 0.5 * (Math.sqrt(3) - 1), G2 = (3 - Math.sqrt(3)) / 6;
+  return function (xin, yin) {
+    let n0 = 0, n1 = 0, n2 = 0;
+    const s = (xin + yin) * F2;
+    const i = Math.floor(xin + s), j = Math.floor(yin + s);
+    const tt = (i + j) * G2;
+    const x0 = xin - (i - tt), y0 = yin - (j - tt);
+    let i1, j1; if (x0 > y0) { i1 = 1; j1 = 0; } else { i1 = 0; j1 = 1; }
+    const x1 = x0 - i1 + G2, y1 = y0 - j1 + G2;
+    const x2 = x0 - 1 + 2 * G2, y2 = y0 - 1 + 2 * G2;
+    const ii = i & 255, jj = j & 255;
+    let t0 = 0.5 - x0*x0 - y0*y0;
+    if (t0 >= 0) { const gi = pm12[ii + perm[jj]]; t0 *= t0; n0 = t0*t0*(g[gi][0]*x0 + g[gi][1]*y0); }
+    let t1 = 0.5 - x1*x1 - y1*y1;
+    if (t1 >= 0) { const gi = pm12[ii + i1 + perm[jj + j1]]; t1 *= t1; n1 = t1*t1*(g[gi][0]*x1 + g[gi][1]*y1); }
+    let t2 = 0.5 - x2*x2 - y2*y2;
+    if (t2 >= 0) { const gi = pm12[ii + 1 + perm[jj + 1]]; t2 *= t2; n2 = t2*t2*(g[gi][0]*x2 + g[gi][1]*y2); }
+    return 70 * (n0 + n1 + n2);             // approx [-1, 1]
+  };
+}
+
+/* ---- Field (Canvas 2D): horizontal particle thread system (brief 3.3) -------
+   Seeded simplex paths, flowing left->right through the disc-stack zone in the
+   lower frame. Turbulent upstream; coherence near zero at idle (downstream only
+   a minimal baseline). The reserved headroom stays empty. White on black. The
+   `coherence` scalar is the seam Phase 3 raises per sealed seat/disc.           */
 const Field = {
-  cv: null, ctx: null, dpr: 1,
-  init(canvas) { this.cv = canvas; this.ctx = canvas.getContext("2d"); },
+  cv: null, ctx: null, dpr: 1, w: 0, h: 0,
+  noise: null, particles: [], coherence: 0,
+  stackCx: 0, upLeft: 0,            // stack center x, upstream edge x (for gradient)
+
+  init(canvas) {
+    this.cv = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.noise = makeNoise2D((Config.SEED ^ Config.FIELD_SEED_OFFSET) >>> 0);
+  },
+
   resize(w, h) {
+    this.w = w; this.h = h;
     this.dpr = Math.min(window.devicePixelRatio || 1, Config.DPR_CAP);
     this.cv.width = Math.round(w * this.dpr);
     this.cv.height = Math.round(h * this.dpr);
     this.ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-    this.paintStatic(w, h);
   },
-  paintStatic(w, h) {
-    const ctx = this.ctx;
-    ctx.clearRect(0, 0, w, h);
+
+  build(geo) {
+    this.stackCx = geo.discs[0].cx;
+    this.upLeft = this.stackCx - geo.discs[0].rx;   // upstream edge ~ left of GUILD
+    const w = this.w, h = this.h;
+    // viewport-width scaling of count (full adaptation lands in Phase 6)
+    let count = Math.round(Config.FIELD_COUNT * Math.min(1, Math.max(0.6, w / 1440)));
+    count = Math.max(Config.FIELD_COUNT_MIN * 0.6 | 0, count);
+    const top = h * Config.FIELD_TOP_FRAC, bot = h * Config.FIELD_BOTTOM_FRAC;
+    const bands = Config.FIELD_BANDS;
+    const laneGap = (bot - top) / bands;
+    const pr = mulberry32((Config.SEED + Config.FIELD_SEED_OFFSET) >>> 0);
+    this.particles = new Array(count);
+    for (let i = 0; i < count; i++) {
+      const band = i % bands;
+      const laneY = top + (band + 0.5) * laneGap;
+      this.particles[i] = {
+        // baseY scatter within the lane is the ONLY decorrelation, so particles
+        // in a lane share the noise path and read as coherent flowing threads.
+        x: pr() * (w + 40) - 20,
+        baseY: laneY + (pr() * 2 - 1) * laneGap * Config.FIELD_BAND_SPREAD,
+        speed: Config.FIELD_SPEED * (1 + (pr() * 2 - 1) * Config.FIELD_SPEED_VAR),
+        alpha: Config.FIELD_DOT_ALPHA * (0.55 + 0.45 * pr()),
+      };
+    }
+  },
+
+  // 0 upstream .. 1 far downstream; idle coherence is a minimal downstream baseline
+  _coh(x) {
+    const a = this.upLeft, b = this.w * 0.98;
+    let g = b > a ? (x - a) / (b - a) : 0;
+    g = g < 0 ? 0 : g > 1 ? 1 : g;
+    g = g * g * (3 - 2 * g);                          // smoothstep
+    const c = (Config.COH_IDLE_BASE + this.coherence) * g;
+    return c > 1 ? 1 : c;
+  },
+
+  _base(ctx) {
+    ctx.clearRect(0, 0, this.w, this.h);
     ctx.fillStyle = "#000000";
-    ctx.fillRect(0, 0, w, h);
-    // faint shallow luminance band centered on the seated stack height
-    const bandY = h * Config.FIELD_BAND_CY;
-    const g = ctx.createLinearGradient(0, bandY - h * 0.22, 0, bandY + h * 0.22);
-    g.addColorStop(0,   "rgba(255,255,255,0)");
-    g.addColorStop(0.5, "rgba(255,255,255,0.028)");
-    g.addColorStop(1,   "rgba(255,255,255,0)");
-    ctx.fillStyle = g;
-    ctx.fillRect(0, 0, w, h);
+    ctx.fillRect(0, 0, this.w, this.h);
+    const bandY = this.h * Config.FIELD_BAND_CY;       // faint shallow band (depth)
+    const grad = ctx.createLinearGradient(0, bandY - this.h * 0.22, 0, bandY + this.h * 0.22);
+    grad.addColorStop(0,   "rgba(255,255,255,0)");
+    grad.addColorStop(0.5, "rgba(255,255,255,0.022)");
+    grad.addColorStop(1,   "rgba(255,255,255,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, this.w, this.h);
+  },
+
+  step(T, dt) {
+    const ctx = this.ctx, w = this.w;
+    this._base(ctx);
+    const FX = Config.NOISE_FREQ_X, FY = Config.NOISE_FREQ_Y, FX2 = Config.NOISE_FREQ_X2;
+    const TT = T * Config.NOISE_TIME, amp = Config.FIELD_AMP, sz = Config.FIELD_DOT_SIZE;
+    ctx.globalCompositeOperation = "lighter";
+    ctx.fillStyle = "#ffffff";
+    for (let k = 0; k < this.particles.length; k++) {
+      const p = this.particles[k];
+      p.x += p.speed * dt;
+      if (p.x > w + 20) p.x -= (w + 40);              // wrap, deterministic
+      const n = this.noise(p.x * FX, p.baseY * FY + TT)
+              + 0.5 * this.noise(p.x * FX2, p.baseY * FY * 2 + TT * 1.3);
+      const y = p.baseY + amp * (1 - this._coh(p.x)) * n;
+      ctx.globalAlpha = p.alpha;
+      ctx.fillRect(p.x, y, sz, sz);
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = "source-over";
+  },
+
+  // reduced-motion / pre-anim: obsidian base + faint band only, no particles
+  renderStatic() { this._base(this.ctx); },
+};
+
+/* ---- Seats idle flicker: seeded breathing + occasional per-disc pulse -------
+   Discs stay static line work; only seats carry light (brief 3.2).             */
+const Seats = {
+  discs: [], list: [],
+  bind(geo) {
+    this.discs = geo.discs;
+    this.list = [];
+    for (const d of geo.discs) for (const s of d.seats) this.list.push({ s: s, d: d });
+  },
+  update(T) {
+    for (const d of this.discs) {                     // coordinated single-disc pulse
+      const pu = d.pulse;
+      const ph = (T / pu.period + pu.phase) % 1;      // 0..1 within the period
+      const wdt = Config.PULSE_DUR / pu.period;
+      pu.v = (ph < wdt)
+        ? Config.PULSE_GAIN * 0.5 * (1 - Math.cos((2 * Math.PI * ph) / wdt))
+        : 0;
+    }
+    for (let k = 0; k < this.list.length; k++) {
+      const s = this.list[k].s, pulse = this.list[k].d.pulse.v;
+      const breathe = 1 + Config.FLICKER_DEPTH * Math.sin(T * s.rate + s.phase);
+      let op = s.op * breathe + s.op * pulse;
+      if (op > 1) op = 1; else if (op < 0) op = 0;
+      if (s._outer) s._outer.setAttribute("stroke-opacity", op.toFixed(3));
+      if (s._inner) s._inner.setAttribute("stroke-opacity", (op * Config.SEAT_O_INNER).toFixed(3));
+    }
+  },
+};
+
+/* ---- Anim: single rAF loop; deterministic from load; pauses on hidden tab --- */
+const Anim = {
+  T: 0, last: 0, running: false, reduced: false,
+  start() {
+    if (this.running || this.reduced) return;
+    this.running = true;
+    this.last = performance.now();
+    requestAnimationFrame(Anim._tick);
+  },
+  stop() { this.running = false; },
+  _tick(now) {
+    if (!Anim.running) return;
+    let dt = (now - Anim.last) / 1000;
+    Anim.last = now;
+    if (dt > 0.05) dt = 0.05;                          // cap jank / hidden-tab gaps
+    Anim.T += dt;
+    Field.step(Anim.T, dt);
+    Seats.update(Anim.T);
+    requestAnimationFrame(Anim._tick);
   },
 };
 
@@ -419,10 +617,23 @@ const canvas = document.getElementById("field");
 Field.init(canvas);
 Mute.init(document.getElementById("mute"));
 
+Anim.reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
 function layout() {
   const w = window.innerWidth, h = window.innerHeight;
+  const geo = Geometry.compute(w, h);
   Field.resize(w, h);
-  Scene.build(overlay, Geometry.compute(w, h));
+  Field.build(geo);
+  Scene.build(overlay, geo);
+  Seats.bind(geo);
+  if (Anim.reduced) {
+    // Full composition static, seats dim-lit, no field animation (brief 3 / C-5).
+    Field.renderStatic();
+  } else {
+    Field.step(Anim.T, 0);     // paint current frame immediately (no jump on resize)
+    Seats.update(Anim.T);
+    Anim.start();
+  }
 }
 layout();
 
@@ -430,6 +641,12 @@ let rT = 0;
 window.addEventListener("resize", () => {
   clearTimeout(rT);
   rT = setTimeout(layout, 120);
+});
+
+// requestAnimationFrame discipline on hidden tabs (brief 5 / technical)
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) Anim.stop();
+  else Anim.start();
 });
 </script>
 </body>

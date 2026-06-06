@@ -92,6 +92,51 @@ muted = diagonal datum strike. Speaker glyph removed.
 
 ---
 
+## Phase 2 - field and idle life (brief 3.2 / 3.3) - tuned values (P-1)
+
+Animated idle state. Single `requestAnimationFrame` loop driven by elapsed time from load, so the
+sequence is identical on every load (restarts at T=0). Pauses on hidden tab. No `Math.random`
+anywhere (C-5). Reserved headroom stays empty - field region sits in the lower frame only.
+
+### Field (Canvas 2D, brief 3.3)
+
+| Parameter | Value | Source |
+|---|---|---|
+| Particle count | 3200 desktop target, scaled by `min(1, max(0.6, w/1440))` | `Config.FIELD_COUNT` (range 2500-4000) |
+| Thread bands | 4 | `Config.FIELD_BANDS` (range 3-5) |
+| Band region (vh) | 0.42 -> 0.93 (lower frame; clears headroom) | `Config.FIELD_TOP/BOTTOM_FRAC` |
+| In-lane scatter | 0.34 x lane gap (band thickness) | `Config.FIELD_BAND_SPREAD` |
+| Flow speed | 26 px/s base, +/- 45% seeded, left -> right | `Config.FIELD_SPEED` / `_VAR` |
+| Turbulence amplitude | 46 px (upstream) | `Config.FIELD_AMP` |
+| Noise | seeded 2D simplex; freq x 0.0016 (+octave 0.0041), y 0.010, drift 0.055/s | `Config.NOISE_*` |
+| Idle coherence | scalar 0 (idle); downstream baseline 0.06 via smoothstep gradient | `Field.coherence` / `Config.COH_IDLE_BASE` |
+| Particle render | white, `globalCompositeOperation: "lighter"`, alpha ~0.34, 1.25 px | `Config.FIELD_DOT_*` |
+| Noise seed | `(SEED ^ 0x1f83)`; particle stream `(SEED + 0x1f83)` | `Config.FIELD_SEED_OFFSET` |
+
+Coherence model: displacement = `AMP x (1 - coherence(x)) x simplex`. `coherence(x)` rises downstream;
+the `Field.coherence` scalar stays 0 at idle and is the seam Phase 3 raises per sealed seat/disc.
+
+### Idle flicker (seats only; discs static line work, brief 3.2)
+
+| Parameter | Value | Source |
+|---|---|---|
+| Breathing depth | 0.34 of base opacity | `Config.FLICKER_DEPTH` |
+| Breathing rate | 0.62 rad/s base, +/- 50% seeded (low freq, instrument-like) | `Config.FLICKER_RATE` / `_VAR` |
+| Per-seat phase/rate | seeded mulberry32 (fold of the layout stream) | `Geometry._seats` |
+| Coordinated disc pulse | period 13-24 s seeded, dur 1.7 s, raised-cosine, gain 0.5 | `Config.PULSE_*` |
+
+All flicker is a deterministic function of seeded params + elapsed time, so it is identical on every
+load. Discs never move or pulse as bodies; only seats carry light.
+
+### Reduced motion / performance
+
+- `prefers-reduced-motion`: no loop; composition static, seats dim-lit, field shows obsidian + faint
+  band only (no particles).
+- Hidden tab: loop paused (visibilitychange); dt capped at 50 ms to avoid jumps on resume.
+- Viewport-width particle scaling in place; full adaptive downscale-after-budget lands in Phase 6.
+
+---
+
 ## Provisional seal geometry (P-3 / OI-2)
 
 - **Not yet drawn** (seals are Phase 3/5). The central vertical **axis column** is laid in as the
