@@ -44,24 +44,45 @@ tooling and docs (`docs/`, `fonts/` sources, `README`) are not part of the deplo
 | Stack center y | tune | 0.520 vh | `Config.STACK_CY_FRAC` |
 | Disc vertical spacing | tune | 2.55 x ry | `Config.DISC_GAP_RY` |
 | Seat counts (bottom->top) | Guild 8 / Project 6 / Agenda 6 | 8 / 6 / 6 = 20 | `Config.DISCS` |
-| Seat ring radius | tune | 0.84 x disc rx | `Config.SEAT_RING_RX` |
-| Seat ring lift (upper face) | reveal seat ring | 0.30 x ry | `Config.SEAT_RING_LIFT` |
-| Seat hex base radius | tune | 8.5 px | `Config.SEAT_HEX_BASE` |
-| Seat foreshorten scale | tune | 0.72 (back) -> 1.16 (front) | `Config.SEAT_FORE_MIN/MAX` |
-| Seat idle luminance | dim-lit | 0.20 to 0.36 opacity | `Config.SEAT_LUMA_MIN/MAX` |
 | devicePixelRatio cap | <= 2 | 2 | `Config.DPR_CAP` |
 | PRNG | seeded, deterministic | mulberry32, seed `0x41554D58` ("AUMX") | `Config.SEED` |
 
-Palette (C-1, pure monochrome): bg `#000000`; disc line `#2b2b2b`; seat-ring guide `#171717`;
-axis column `#181818`; seat light `#f4f4f4`. Greys for falloff only. No hue anywhere.
+### Phase 1 revision (canon density pass) - tuned values (P-1)
+
+Per operator review against the canonical AXIS/BRAIN visual: geometric vocabulary extracted
+(concentric rings, radials, inner lattice, outlined hexes with inner hex, central spine). Luminance,
+camera, brain galaxy, and HUD deliberately NOT extracted - idle stays dim line work, no glow, no bloom.
+
+| Parameter | Value | Source |
+|---|---|---|
+| Disc concentric rings | 7 rings at u = 0.16 / 0.30 / 0.46 / 0.62 / 0.80 / 0.93 / 1.00 | `Config.DISC_RINGS` |
+| Ring stroke weights | 0.5 - 1.2 px (hairline, varied) | `Config.DISC_RINGS[].w` |
+| Ring opacities | 0.05 - 0.13 (dim) | `Config.DISC_RINGS[].o` |
+| Hairline radials | 36 spokes, u 0.16 -> 1.00, opacity 0.05 | `Config.DISC_RADIAL_*` |
+| Inner lattice | 18-point woven star polygon, skip 7, at u 0.58, opacity 0.06 | `Config.DISC_LATTICE_*` |
+| Seat ring radius | 0.86 x disc rx | `Config.SEAT_RING_U` |
+| Seat outer-hex radius | 13 px (instrument-sized) x foreshorten | `Config.SEAT_HEX_BASE` |
+| Seat inner-hex ratio | 0.52 x outer | `Config.SEAT_INNER_RATIO` |
+| Seat foreshorten scale | 0.74 (back) -> 1.18 (front) | `Config.SEAT_FORE_MIN/MAX` |
+| Seat hex squash | 0.54 (sits on tilted face) | `Config.SEAT_HEX_SQUASH` |
+| Seat idle outline opacity | 0.26 - 0.40, seeded variance | `Config.SEAT_O_OUTER_MIN/MAX` |
+| Seat inner-hex opacity | 0.55 x outer | `Config.SEAT_O_INNER` |
+| Central axis opacity | 0.10 | `Config.C_AXIS_O` |
+
+Palette (C-1, pure monochrome): all structure is white (`#ffffff`) line work dimmed by opacity over
+`#000000`; grey falloff via opacity only. No fills on discs or seats (outline only). No hue anywhere.
+
+Mute mark: redrawn as an outlined hexagon in the seat-hex register (C-6). Live = small center node;
+muted = diagonal datum strike. Speaker glyph removed.
 
 ---
 
 ## Provisional seal geometry (P-3 / OI-2)
 
 - **Not yet drawn** (seals are Phase 3/5). The central vertical **axis column** is laid in as the
-  line the disc seals will later draw into. The **Datum Cross** remains the only confirmed canonical
-  mark; all per-disc seal geometry will be implemented as PROVISIONAL and flagged in code + here.
+  line the disc seals will later draw into; each seat's **inner hex** reserves the host area for its
+  future seal draft. The **Datum Cross** remains the only confirmed canonical mark; all per-disc seal
+  geometry will be implemented as PROVISIONAL and flagged in code + here.
 
 ---
 

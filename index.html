@@ -125,23 +125,43 @@ const Config = {
     { id: "project", index: "02", name: "PROJECT", seats: 6 },
     { id: "agenda",  index: "03", name: "AGENDA",  seats: 6 },
   ],
-  SEAT_RING_RX: 0.84,        // seat ring radius as fraction of disc rx
-  SEAT_RING_LIFT: 0.30,      // ring lift off disc center, in units of ry (reveals upper face)
-  SEAT_HEX_BASE: 8.5,        // base hex radius (px) before foreshortening
-  SEAT_FORE_MIN: 0.72,       // foreshorten scale at the back of the ring
-  SEAT_FORE_MAX: 1.16,       // foreshorten scale at the front of the ring
-  SEAT_HEX_SQUASH: 0.52,     // vertical squash of hex to sit on the tilted face
+  // Disc face structure - canon vocabulary (AXIS/BRAIN): concentric ring sets at
+  // varied hairline weights, hairline radials, inner lattice. Dim and static; idle
+  // has NO glow and NO bloom. Radii are fractions of disc rx. Tuned (P-1).
+  DISC_RINGS: [               // { u: radius frac, w: stroke px, o: opacity }
+    { u: 0.16, w: 0.5, o: 0.05 },
+    { u: 0.30, w: 0.6, o: 0.07 },
+    { u: 0.46, w: 0.5, o: 0.05 },
+    { u: 0.62, w: 1.0, o: 0.10 },
+    { u: 0.80, w: 0.6, o: 0.06 },
+    { u: 0.93, w: 1.2, o: 0.13 },   // heavier ring just outside the seat ring
+    { u: 1.00, w: 0.7, o: 0.08 },
+  ],
+  DISC_RADIAL_COUNT: 36,     // hairline spokes across the disc face
+  DISC_RADIAL_U0: 0.16,      // spokes run from this radius...
+  DISC_RADIAL_U1: 1.00,      // ...out to the outer ring
+  DISC_RADIAL_O: 0.05,
+  DISC_LATTICE_POINTS: 18,   // inner lattice: woven star-polygon mesh
+  DISC_LATTICE_U: 0.58,      // lattice ring radius (fraction of rx)
+  DISC_LATTICE_SKIP: 7,      // connect each point to i+skip -> woven look
+  DISC_LATTICE_O: 0.06,
 
-  // Idle luminance of seats (dim-lit; seeded, deterministic - brief 3.2 / C-5)
-  SEAT_LUMA_MIN: 0.20,
-  SEAT_LUMA_MAX: 0.36,
+  // Seats: outlined hexagons with inner hex geometry, seated on the ring (canon).
+  // Instrument-sized to host the future flicker and seal draft. Outline only.
+  SEAT_RING_U: 0.86,         // seat ring radius as fraction of disc rx
+  SEAT_HEX_BASE: 13,         // base outer-hex radius (px), instrument-sized
+  SEAT_INNER_RATIO: 0.52,    // inner hex radius as fraction of outer
+  SEAT_FORE_MIN: 0.74,       // foreshorten scale at the back of the ring
+  SEAT_FORE_MAX: 1.18,       // foreshorten scale at the front of the ring
+  SEAT_HEX_SQUASH: 0.54,     // vertical squash of hex to sit on the tilted face
+  SEAT_O_OUTER_MIN: 0.26,    // idle outline opacity (dim; seeded variance)
+  SEAT_O_OUTER_MAX: 0.40,
+  SEAT_O_INNER: 0.55,        // inner-hex opacity relative to outer
 
-  // Monochrome palette (C-1): white luminescence, greys for falloff only.
-  C_DISC:      "#2b2b2b",    // dim architectural line weight
-  C_RING:      "#171717",    // seat-ring guide
-  C_AXIS:      "#181818",    // central vertical axis column
-  C_SEAT:      "#f4f4f4",    // seat light source
-  DPR_CAP:     2,
+  // Monochrome (C-1): white line work on black; grey falloff via opacity only.
+  C_LINE:   "#ffffff",       // all structure drawn white, dimmed by opacity
+  C_AXIS_O: 0.10,            // central axis column opacity
+  DPR_CAP:  2,
 
   SEED: 0x4155_4d58,         // fixed seed "AUMX" -> deterministic idle (brief 3.2)
 };
@@ -187,26 +207,27 @@ const Geometry = {
   },
 
   _seats(disc, cx, cy, rx, ry, prng) {
-    const ringRx = rx * Config.SEAT_RING_RX;
-    const ringRy = ry * Config.SEAT_RING_RX;
-    const ringCy = cy - ry * Config.SEAT_RING_LIFT;
+    // Seats ride the ring on the disc's tilted face (canon: seated on the structure).
+    const ringRx = rx * Config.SEAT_RING_U;
+    const ringRy = ry * Config.SEAT_RING_U;
     const out = [];
     for (let s = 0; s < disc.seats; s++) {
       // even distribution; offset so seats straddle front/back symmetrically
       const t = (s / disc.seats) * Math.PI * 2 - Math.PI / 2 + Math.PI / disc.seats;
       const front = (Math.sin(t) + 1) / 2;                 // 0 back .. 1 front
       const fore = Config.SEAT_FORE_MIN + (Config.SEAT_FORE_MAX - Config.SEAT_FORE_MIN) * front;
-      const luma = Config.SEAT_LUMA_MIN +
-                   (Config.SEAT_LUMA_MAX - Config.SEAT_LUMA_MIN) * (0.45 * front + 0.55 * prng());
+      // idle outline opacity: dim, seeded variance, slight front weighting (C-5)
+      const op = Config.SEAT_O_OUTER_MIN +
+                 (Config.SEAT_O_OUTER_MAX - Config.SEAT_O_OUTER_MIN) * (0.5 * front + 0.5 * prng());
       out.push({
         id: disc.id + "-" + (s + 1),
         seatNo: s + 1,
         discName: disc.name,
         x: cx + ringRx * Math.cos(t),
-        y: ringCy + ringRy * Math.sin(t),
+        y: cy + ringRy * Math.sin(t),
         r: Config.SEAT_HEX_BASE * fore,
         front,
-        luma,
+        op,
       });
     }
     // draw back-to-front so front seats overlap correctly
@@ -236,61 +257,78 @@ const Scene = {
   build(svg, geo) {
     while (svg.firstChild) svg.removeChild(svg.firstChild);
     svg.setAttribute("viewBox", "0 0 " + geo.W + " " + geo.H);
+    const L = Config.C_LINE;
 
-    // defs: soft bloom for the seat light sources
-    const defs = el("defs", {});
-    const f = el("filter", { id: "seatGlow", x: "-120%", y: "-120%", width: "340%", height: "340%" });
-    f.appendChild(el("feGaussianBlur", { in: "SourceGraphic", stdDeviation: "2.6" }));
-    defs.appendChild(f);
-    svg.appendChild(defs);
-
-    // central axis column (the canonical axis the disc seals draw into)
+    // central axis column: the organizing spine the disc seals draw into (canon)
     svg.appendChild(el("line", {
       x1: geo.axis.x, y1: geo.axis.y1, x2: geo.axis.x, y2: geo.axis.y2,
-      stroke: Config.C_AXIS, "stroke-width": "1",
+      stroke: L, "stroke-opacity": String(Config.C_AXIS_O), "stroke-width": "1",
     }));
 
-    // discs: dim, architectural, line-weight ellipses; never move (brief 3.2)
-    for (const d of geo.discs) {
-      const g = el("g", { "data-disc": d.id });
-      g.appendChild(el("ellipse", {
-        cx: d.cx, cy: d.cy, rx: d.rx, ry: d.ry,
-        fill: "none", stroke: Config.C_DISC, "stroke-width": "1.2",
+    // discs first, then seats on top, so seats read as seated on the structure
+    for (const d of geo.discs) this._disc(svg, d, L);
+    for (const d of geo.discs) this._seatGroup(svg, d, L);
+  },
+
+  // One disc face: inner lattice, hairline radials, concentric ring sets.
+  // All white line work at low opacity. Dim, static, no glow, no bloom (idle).
+  _disc(svg, d, L) {
+    const g = el("g", { "data-disc": d.id });
+    // point on the tilted disc face at normalized radius u and angle th
+    const P = (u, th) => [d.cx + u * d.rx * Math.cos(th), d.cy + u * d.ry * Math.sin(th)];
+
+    // inner lattice: woven star-polygon mesh filling the disc face
+    const M = Config.DISC_LATTICE_POINTS, sk = Config.DISC_LATTICE_SKIP, lu = Config.DISC_LATTICE_U;
+    for (let i = 0; i < M; i++) {
+      const a = P(lu, (i / M) * Math.PI * 2);
+      const b = P(lu, (((i + sk) % M) / M) * Math.PI * 2);
+      g.appendChild(el("line", {
+        x1: a[0], y1: a[1], x2: b[0], y2: b[1],
+        stroke: L, "stroke-opacity": String(Config.DISC_LATTICE_O), "stroke-width": "0.5",
       }));
-      // seat-ring guide on the upper face
-      g.appendChild(el("ellipse", {
-        cx: d.cx, cy: d.cy - d.ry * Config.SEAT_RING_LIFT,
-        rx: d.rx * Config.SEAT_RING_RX, ry: d.ry * Config.SEAT_RING_RX,
-        fill: "none", stroke: Config.C_RING, "stroke-width": "1",
-        "stroke-dasharray": "2 5",
-      }));
-      svg.appendChild(g);
     }
 
-    // seats: hexagonal nodes, the only light sources on the discs
-    for (const d of geo.discs) {
-      const sg = el("g", { "data-seats": d.id });
-      for (const s of d.seats) {
-        // bloom underlay
-        sg.appendChild(el("polygon", {
-          points: hexPoints(s.x, s.y, s.r * 1.25, Config.SEAT_HEX_SQUASH),
-          fill: Config.C_SEAT, "fill-opacity": (s.luma * 0.5).toFixed(3),
-          filter: "url(#seatGlow)",
-        }));
-        // seat body
-        const hex = el("polygon", {
-          points: hexPoints(s.x, s.y, s.r, Config.SEAT_HEX_SQUASH),
-          fill: Config.C_SEAT, "fill-opacity": s.luma.toFixed(3),
-          stroke: Config.C_SEAT, "stroke-opacity": (s.luma * 0.9).toFixed(3),
-          "stroke-width": "0.6",
-          "data-seat": s.id,
-        });
-        hex.setAttribute("role", "img");
-        hex.setAttribute("aria-label", "Seat " + s.seatNo + ", " + d.name + " disc");
-        sg.appendChild(hex);
-      }
-      svg.appendChild(sg);
+    // hairline radials connecting the ring sets
+    const RC = Config.DISC_RADIAL_COUNT;
+    for (let k = 0; k < RC; k++) {
+      const th = (k / RC) * Math.PI * 2;
+      const a = P(Config.DISC_RADIAL_U0, th), b = P(Config.DISC_RADIAL_U1, th);
+      g.appendChild(el("line", {
+        x1: a[0], y1: a[1], x2: b[0], y2: b[1],
+        stroke: L, "stroke-opacity": String(Config.DISC_RADIAL_O), "stroke-width": "0.5",
+      }));
     }
+
+    // concentric ring sets at varied hairline weights
+    for (const r of Config.DISC_RINGS) {
+      g.appendChild(el("ellipse", {
+        cx: d.cx, cy: d.cy, rx: d.rx * r.u, ry: d.ry * r.u,
+        fill: "none", stroke: L, "stroke-opacity": String(r.o), "stroke-width": String(r.w),
+      }));
+    }
+    svg.appendChild(g);
+  },
+
+  // Seats: outlined hexagons with inner hex geometry. Outline only - the body
+  // hosts the future flicker, the inner hex hosts the future seal draft.
+  _seatGroup(svg, d, L) {
+    const sg = el("g", { "data-seats": d.id });
+    for (const s of d.seats) {
+      const seat = el("g", { "data-seat": s.id });
+      seat.setAttribute("role", "img");
+      seat.setAttribute("aria-label", "Seat " + s.seatNo + ", " + d.name + " disc");
+      seat.appendChild(el("polygon", {        // outer instrument body
+        points: hexPoints(s.x, s.y, s.r, Config.SEAT_HEX_SQUASH),
+        fill: "none", stroke: L, "stroke-opacity": s.op.toFixed(3), "stroke-width": "1",
+      }));
+      seat.appendChild(el("polygon", {        // inner hex geometry
+        points: hexPoints(s.x, s.y, s.r * Config.SEAT_INNER_RATIO, Config.SEAT_HEX_SQUASH),
+        fill: "none", stroke: L,
+        "stroke-opacity": (s.op * Config.SEAT_O_INNER).toFixed(3), "stroke-width": "0.7",
+      }));
+      sg.appendChild(seat);
+    }
+    svg.appendChild(sg);
   },
 };
 
@@ -337,16 +375,15 @@ const Mute = {
     const on = !this.muted;
     this.btn.setAttribute("aria-pressed", String(this.muted));
     this.btn.setAttribute("aria-label", this.muted ? "Unmute audio" : "Mute audio");
-    // speaker body (rect + triangle) plus either sound arcs or a cut bar
+    // Drawn geometric mute mark in the seat-hex register (C-6): an outlined
+    // hexagon. Live = small center node; muted = diagonal datum strike.
     let svg = '<svg viewBox="0 0 30 30" fill="none" stroke="currentColor" '
-            + 'stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round">';
-    svg += '<path d="M5 12 H9 L14 8 V22 L9 18 H5 Z" fill="currentColor" stroke="none"/>';
+            + 'stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round">';
+    svg += '<polygon points="22.79,19.5 15,24 7.21,19.5 7.21,10.5 15,6 22.79,10.5"/>';
     if (on) {
-      svg += '<path d="M18 11 a5 5 0 0 1 0 8" />';
-      svg += '<path d="M21 8 a9 9 0 0 1 0 14" opacity="0.7"/>';
+      svg += '<circle cx="15" cy="15" r="1.7" fill="currentColor" stroke="none"/>';
     } else {
-      svg += '<line x1="18" y1="11" x2="25" y2="19" />';
-      svg += '<line x1="25" y1="11" x2="18" y2="19" />';
+      svg += '<line x1="8.5" y1="8.5" x2="21.5" y2="21.5"/>';
     }
     svg += "</svg>";
     this.btn.innerHTML = svg;
