@@ -111,19 +111,26 @@
    Values chosen by the Builder within the brief's confirmed ranges (P-1).
    Final values are recorded in docs/BUILD-REPORT.md.                          */
 const Config = {
-  // Composition (brief 3.1)
+  // Composition (brief 3.1, AS AMENDED by the Human Architect - see build report).
   ELLIPSE_RATIO: 7.0,        // width:height of each disc ellipse (range 6-8)
-  STACK_CX_FRAC: 0.575,      // stack center x, slightly right of center
-  STACK_CY_FRAC: 0.520,      // stack center y
-  DISC_RX_MAX: 360,          // px cap for horizontal disc radius
-  DISC_RX_VW: 0.255,         // horizontal disc radius as fraction of viewport width
-  DISC_GAP_RY: 2.55,         // vertical spacing between discs, in units of ry
+  STACK_CX_FRAC: 0.50,       // AMENDMENT 2: stack centered horizontally
+  DISC_RX_VW: 0.215,         // base (bottom-disc) horizontal radius, fraction of vw
+  DISC_RX_MAX: 320,          // px cap for the base horizontal radius
 
-  // Discs and seats (brief 3.2). Bottom -> top.
+  // AMENDMENT 3: stack seated low; the upper third is reserved as headroom for a
+  // future brain / node-graph element (NOT built under this brief). Disc centers
+  // expressed as viewport-height fractions; the spine reaches up into the headroom.
+  STACK_BOTTOM_FRAC: 0.82,   // GUILD (bottom) center y
+  STACK_TOP_FRAC:    0.46,   // AGENDA (top) center y; clears the reserved upper third
+  HEADROOM_AXIS_TOP: 0.07,   // axis extends up to here (vh frac), into the headroom
+  FIELD_BAND_CY:     0.64,   // field luminance band center (stack vertical middle)
+
+  // AMENDMENT 1: disc size hierarchy mirrors the canon - GUILD largest at bottom,
+  // AGENDA smallest at top. `scale` multiplies the base radius. Bottom -> top.
   DISCS: [
-    { id: "guild",   index: "01", name: "GUILD",   seats: 8 },
-    { id: "project", index: "02", name: "PROJECT", seats: 6 },
-    { id: "agenda",  index: "03", name: "AGENDA",  seats: 6 },
+    { id: "guild",   index: "01", name: "GUILD",   seats: 8, scale: 1.00 },
+    { id: "project", index: "02", name: "PROJECT", seats: 6, scale: 0.70 },
+    { id: "agenda",  index: "03", name: "AGENDA",  seats: 6, scale: 0.47 },
   ],
   // Disc face structure - canon vocabulary (AXIS/BRAIN): concentric ring sets at
   // varied hairline weights, hairline radials, inner lattice. Dim and static; idle
@@ -157,11 +164,13 @@ const Config = {
   SEAT_O_OUTER_MIN: 0.26,    // idle outline opacity (dim; seeded variance)
   SEAT_O_OUTER_MAX: 0.40,
   SEAT_O_INNER: 0.55,        // inner-hex opacity relative to outer
+  SEAT_SCALE_FLOOR: 0.64,    // seats taper with disc size but not below this blend
 
   // Monochrome (C-1): white line work on black; grey falloff via opacity only.
-  C_LINE:   "#ffffff",       // all structure drawn white, dimmed by opacity
-  C_AXIS_O: 0.10,            // central axis column opacity
-  DPR_CAP:  2,
+  C_LINE:      "#ffffff",    // all structure drawn white, dimmed by opacity
+  C_AXIS_O:    0.10,         // central axis column opacity (through the stack)
+  C_AXIS_HEAD_O: 0.05,       // fainter axis in the reserved headroom (anticipation)
+  DPR_CAP:     2,
 
   SEED: 0x4155_4d58,         // fixed seed "AUMX" -> deterministic idle (brief 3.2)
 };
@@ -182,26 +191,32 @@ const Geometry = {
 
   compute(w, h) {
     this.W = w; this.H = h;
-    const rx = Math.min(w * Config.DISC_RX_VW, Config.DISC_RX_MAX);
-    const ry = rx / Config.ELLIPSE_RATIO;
+    const baseRx = Math.min(w * Config.DISC_RX_VW, Config.DISC_RX_MAX);
     const cx = w * Config.STACK_CX_FRAC;
-    const cyMid = h * Config.STACK_CY_FRAC;
-    const gap = ry * Config.DISC_GAP_RY;
+    const yBottom = h * Config.STACK_BOTTOM_FRAC;   // GUILD center
+    const yTop = h * Config.STACK_TOP_FRAC;         // AGENDA center
 
-    // Bottom (guild) lowest on screen, agenda highest. DISCS is bottom->top.
+    // Bottom (guild, i=0) lowest and largest; agenda (top) highest and smallest.
     const n = Config.DISCS.length;
     const prng = mulberry32(Config.SEED);
     this.discs = Config.DISCS.map((d, i) => {
-      // i=0 bottom -> largest y; topmost -> smallest y
-      const cy = cyMid + (i - (n - 1) / 2) * gap * -1;
+      const f = n === 1 ? 0 : i / (n - 1);          // 0 bottom .. 1 top
+      const cy = yBottom + (yTop - yBottom) * f;
+      const rx = baseRx * d.scale;                  // AMENDMENT 1: size hierarchy
+      const ry = rx / Config.ELLIPSE_RATIO;
       const seats = this._seats(d, cx, cy, rx, ry, prng);
       return { ...d, cx, cy, rx, ry, seats };
     });
 
+    // Central spine: through the stack, then extended up into the reserved
+    // headroom (AMENDMENT 3) to imply the future element that arrives above.
+    const top = this.discs[this.discs.length - 1];
+    const bot = this.discs[0];
     this.axis = {
       x: cx,
-      y1: this.discs[this.discs.length - 1].cy - ry * 1.4,
-      y2: this.discs[0].cy + ry * 1.4,
+      yStackTop: top.cy,
+      yStackBot: bot.cy + bot.ry * 1.6,
+      yHead: h * Config.HEADROOM_AXIS_TOP,
     };
     return this;
   },
@@ -216,6 +231,8 @@ const Geometry = {
       const t = (s / disc.seats) * Math.PI * 2 - Math.PI / 2 + Math.PI / disc.seats;
       const front = (Math.sin(t) + 1) / 2;                 // 0 back .. 1 front
       const fore = Config.SEAT_FORE_MIN + (Config.SEAT_FORE_MAX - Config.SEAT_FORE_MIN) * front;
+      // seats taper gently with disc size (AMENDMENT 1) but stay instrument-readable
+      const dScale = Config.SEAT_SCALE_FLOOR + (1 - Config.SEAT_SCALE_FLOOR) * disc.scale;
       // idle outline opacity: dim, seeded variance, slight front weighting (C-5)
       const op = Config.SEAT_O_OUTER_MIN +
                  (Config.SEAT_O_OUTER_MAX - Config.SEAT_O_OUTER_MIN) * (0.5 * front + 0.5 * prng());
@@ -225,7 +242,7 @@ const Geometry = {
         discName: disc.name,
         x: cx + ringRx * Math.cos(t),
         y: cy + ringRy * Math.sin(t),
-        r: Config.SEAT_HEX_BASE * fore,
+        r: Config.SEAT_HEX_BASE * dScale * fore,
         front,
         op,
       });
@@ -259,10 +276,16 @@ const Scene = {
     svg.setAttribute("viewBox", "0 0 " + geo.W + " " + geo.H);
     const L = Config.C_LINE;
 
-    // central axis column: the organizing spine the disc seals draw into (canon)
+    // central spine. Through the stack at full axis opacity; then extended up into
+    // the reserved headroom, fainter and dotted, implying the element to come.
     svg.appendChild(el("line", {
-      x1: geo.axis.x, y1: geo.axis.y1, x2: geo.axis.x, y2: geo.axis.y2,
+      x1: geo.axis.x, y1: geo.axis.yStackTop, x2: geo.axis.x, y2: geo.axis.yStackBot,
       stroke: L, "stroke-opacity": String(Config.C_AXIS_O), "stroke-width": "1",
+    }));
+    svg.appendChild(el("line", {
+      x1: geo.axis.x, y1: geo.axis.yHead, x2: geo.axis.x, y2: geo.axis.yStackTop,
+      stroke: L, "stroke-opacity": String(Config.C_AXIS_HEAD_O), "stroke-width": "1",
+      "stroke-dasharray": "1 7",
     }));
 
     // discs first, then seats on top, so seats read as seated on the structure
@@ -350,8 +373,8 @@ const Field = {
     ctx.clearRect(0, 0, w, h);
     ctx.fillStyle = "#000000";
     ctx.fillRect(0, 0, w, h);
-    // faint shallow luminance band centered on the stack height
-    const bandY = h * Config.STACK_CY_FRAC;
+    // faint shallow luminance band centered on the seated stack height
+    const bandY = h * Config.FIELD_BAND_CY;
     const g = ctx.createLinearGradient(0, bandY - h * 0.22, 0, bandY + h * 0.22);
     g.addColorStop(0,   "rgba(255,255,255,0)");
     g.addColorStop(0.5, "rgba(255,255,255,0.028)");

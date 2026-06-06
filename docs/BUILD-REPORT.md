@@ -39,13 +39,28 @@ tooling and docs (`docs/`, `fonts/` sources, `README`) are not part of the deplo
 | Parameter | Range (brief) | Value | Source |
 |---|---|---|---|
 | Disc ellipse ratio (w:h) | 6:1 to 8:1 | **7:1** | `Config.ELLIPSE_RATIO` |
-| Disc horizontal radius | tune | min(0.255 vw, 360px) | `Config.DISC_RX_VW` / `DISC_RX_MAX` |
-| Stack center x | right of center | 0.575 vw | `Config.STACK_CX_FRAC` |
-| Stack center y | tune | 0.520 vh | `Config.STACK_CY_FRAC` |
-| Disc vertical spacing | tune | 2.55 x ry | `Config.DISC_GAP_RY` |
 | Seat counts (bottom->top) | Guild 8 / Project 6 / Agenda 6 | 8 / 6 / 6 = 20 | `Config.DISCS` |
 | devicePixelRatio cap | <= 2 | 2 | `Config.DPR_CAP` |
 | PRNG | seeded, deterministic | mulberry32, seed `0x41554D58` ("AUMX") | `Config.SEED` |
+
+> NOTE: original 3.1 placement/sizing values (right-of-center, single shared radius, symmetric
+> vertical spacing) are **superseded** by the confirmed composition amendments below.
+
+### CONFIRMED composition amendments to Section 3.1 (Human Architect, Phase 1 rev 2)
+
+These supersede the original brief values. Density, seat treatment, and mute mark from rev 1 are
+accepted and locked, carried forward unchanged.
+
+| # | Amendment | Final value (P-1) | Source |
+|---|---|---|---|
+| 1 | Disc size hierarchy (GUILD largest -> AGENDA smallest), tuned toward canon | scale 1.00 / 0.70 / 0.47 (bottom->top) | `Config.DISCS[].scale` |
+| 1 | Base (bottom-disc) horizontal radius | min(0.215 vw, 320px) | `Config.DISC_RX_VW` / `DISC_RX_MAX` |
+| 1 | Seat size taper with disc | floor 0.64 + 0.36 x disc.scale, x foreshorten | `Config.SEAT_SCALE_FLOOR` |
+| 2 | Stack centered horizontally (was 0.575 vw) | 0.50 vw | `Config.STACK_CX_FRAC` |
+| 3 | Stack seated low; GUILD center | 0.82 vh | `Config.STACK_BOTTOM_FRAC` |
+| 3 | AGENDA center (clears reserved upper third) | 0.46 vh | `Config.STACK_TOP_FRAC` |
+| 3 | Reserved headroom for future brain/node-graph element (NOT built this brief) | ~ upper third of viewport | composition reserve |
+| 3 | Central spine extended up into headroom (fainter, dotted) to imply what arrives | axis top at 0.07 vh, opacity 0.05, dash "1 7" | `Config.HEADROOM_AXIS_TOP` / `C_AXIS_HEAD_O` |
 
 ### Phase 1 revision (canon density pass) - tuned values (P-1)
 
