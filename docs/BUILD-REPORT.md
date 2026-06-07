@@ -17,7 +17,7 @@ tooling and docs (`docs/`, `fonts/` sources, `README`) are not part of the deplo
 | 2 Field | **CONFIRMED (sealed)** by Human Architect | particles, turbulence, coherence, seeded idle flicker |
 | 3 Interaction | **CONFIRMED (sealed)** by Human Architect | state machine, proposal, ceremony drafting + burst, sealed persistence, coherence steps |
 | 4 Audio engine | **CONFIRMED (sealed)** by Human Architect | context, drone, quantized scheduler, stinger pool, voice mgmt, mute bind, dev placeholder tones |
-| 5 Arc | in progress | disc completions, finale, axis alignment, hold, scored reset |
+| 5 Arc | **BUILT - awaiting confirmation gate** | finale on 3rd disc, axis alignment, ~4s hold, scored 6-8s reset to clean idle |
 | 6 Hardening | not started | touch, keyboard, reduced motion, performance, asset integration |
 
 ---
@@ -254,13 +254,51 @@ End-to-end interaction+audio sim seals a full disc with grid-timed bursts and no
 
 ---
 
+## Phase 5 - arc (brief 3.6) - the PBHO cycle - BUILT
+
+`Finale` module, driven before `Field.step` so it owns the coherence scalar while the arc resolves
+(`step()`'s per-frame ease becomes a no-op because target == value). Armed when the third disc
+completes; begins once the disc-completion traces have finished so the finale reads as a culmination.
+
+| Parameter | Value | Source |
+|---|---|---|
+| Align (axis draw + coherence to full) | 1.6 s | `Config.FINALE_ALIGN` |
+| Hold (fully coherent, steady) | 4.0 s | `Config.FINALE_HOLD` |
+| Reset (scored, to clean idle) | 7.0 s (brief 6-8) | `Config.FINALE_RESET` |
+| Alignment axis brightness | stroke-opacity 0.85, 1.6 px | `Config.FINALE_AXIS_O` |
+
+Sequence:
+
+1. **Align** - a bright line draws up the central axis from the bottom disc seal to the top
+   (`stroke-dashoffset`), aligning the three disc seals on the canonical vertical column; coherence
+   ramps (smoothstep) from its current value to full (1.0), overriding the pre-finale 0.82 cap. The
+   audio finale voice is scheduled on the next full bar (`Audio.scheduleFinale`, brief 4.2).
+2. **Hold (~4s)** - coherence held at full; the field runs fully laminar downstream; the axis stays lit.
+3. **Reset (scored 6-8s)** - a single smoothstep `mix` eases 1 -> 0: coherence resolves back to idle,
+   every seal mark (seat seals, disc seals, traces, the alignment axis) fades via group `opacity`, and
+   each seat cross-fades from sealed luminance back to its idle breathing. **Resolution, not reboot:**
+   the drone runs continuously throughout, nothing is hard-cleared while visible, and the session
+   state (`Session.sealed` / `completed`, seat states, disc `complete`, seal nodes) is released *only
+   after* the composition has already eased to a clean idle - from which a new cycle may begin.
+
+Reduced motion: no loop to animate the arc, so the resolved aligned state is shown statically (the
+timed hold/reset choreography is a Phase 6 reduced-motion item).
+
+Validation (headless sim of the full 20-seat arc): finale passes through align -> hold -> reset;
+coherence reaches exactly 1.0 and then eases monotonically down through reset; the alignment axis is
+present on the central column during hold; after reset the overlay returns to its exact idle child
+count, all seats are idle with seal marks removed, `Session` is empty, coherence is 0, and a fresh
+ceremony can start (the PBHO cycle repeats).
+
+---
+
 ## Acceptance criteria (brief 8) - tracking
 
 - [ ] Idle identical on every load (deterministic) - PRNG seeded; verify on reload (Phase 2 flicker pending)
 - [x] Hover proposes / exit reverts (Phase 3) - verified in headless sim
 - [x] Rapid clicks -> one ceremony, one stinger (Phase 3 state machine + Phase 4 audio) - verified in sim
 - [x] Bursts land on quantized boundary (Phase 4) - half-bar grid verified in headless audio sim
-- [ ] Full 20-seat arc -> 3 disc completions -> finale -> scored reset (Phase 5)
+- [x] Full 20-seat arc -> 3 disc completions -> finale -> ~4s hold -> scored reset to clean idle (Phase 5) - verified in headless sim
 - [x] Zero network requests beyond the file and `/audio/` (no CDN / third-party; font embedded)
 - [x] Standing text = wordmark + the one sentence, nothing else
 - [ ] Usable muted / keyboard-only / reduced motion (Phase 6)

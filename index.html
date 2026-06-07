@@ -8,8 +8,8 @@
     [x] Phase 1  Static composition (this file): discs, seats, tilt, wordmark, creed, mute geometry.
     [x] Phase 2  Field: particles, turbulence, coherence, seeded idle flicker.
     [x] Phase 3  Interaction: state machine, proposal, ceremony drafting + burst, sealed persistence.
-    [~] Phase 4  Audio engine: context, drone, quantized scheduler, stinger pool, voice mgmt, mute.
-    [ ] Phase 5  Arc: disc completions, finale, hold, scored reset.
+    [x] Phase 4  Audio engine: context, drone, quantized scheduler, stinger pool, voice mgmt, mute.
+    [~] Phase 5  Arc: disc completions, finale, axis alignment, hold, scored reset.
     [ ] Phase 6  Hardening: touch, keyboard, reduced motion, performance, asset integration.
 
   Typeface: Space Mono (Colophon Foundry & Benjamin Critton), SIL OFL, embedded as base64 woff2.
@@ -217,6 +217,16 @@ const Config = {
   LABEL_SIZE:      11,       // px, Space Mono hover label
   LABEL_DY:        16,       // px label offset above the seat
   DISC_TRACE_DUR:  1.1,      // disc-complete circumference trace (sec)
+
+  // ---- Arc / finale (brief 3.6) ----
+  // Third disc completion aligns the three disc seals on the central axis, holds
+  // the fully coherent state, then SCORES a slow reset back to clean idle. The
+  // reset reads as resolution (a settling release), never reboot - the drone runs
+  // continuously and nothing is hard-cleared while visible.
+  FINALE_ALIGN:  1.6,        // axis-alignment draw + coherence ramp to full (sec)
+  FINALE_HOLD:   4.0,        // resolved hold (sec; brief ~4s)
+  FINALE_RESET:  7.0,        // scored reset to clean idle (sec; brief 6-8s)
+  FINALE_AXIS_O: 0.85,       // brightness of the alignment axis line at full
 
   // ---- Audio engine (brief 4.1 / 4.2 / 4.4) ----
   // SILENT BY DEFAULT. Real assets are OI-3 (NOT delivered): used if present,
@@ -623,8 +633,13 @@ const Seats = {
         const breathe = 1 + Config.FLICKER_DEPTH * Math.sin(T * s.rate + s.phase);
         op = s.op * breathe + s.op * pulse;
       } else if (s.state === "sealed") {                // persistent bright; register flicker at seal
-        const u = (T - s.sealT) / Config.BURST_DURATION;
-        op = u < 1 ? 0.45 + 0.55 * Math.abs(Math.sin(u * Math.PI * 4)) : 1;
+        if (Finale.state === "reset") {                 // scored reset: settle from sealed -> idle breathing
+          const breathe = 1 + Config.FLICKER_DEPTH * Math.sin(T * s.rate + s.phase);
+          op = s.op * breathe * (1 - Finale.mix) + Finale.mix;
+        } else {
+          const u = (T - s.sealT) / Config.BURST_DURATION;
+          op = u < 1 ? 0.45 + 0.55 * Math.abs(Math.sin(u * Math.PI * 4)) : 1;
+        }
       } else {                                          // proposed / ceremony: locks bright
         op = 1;
       }
@@ -651,6 +666,7 @@ const Anim = {
     Anim.last = now;
     if (dt > 0.05) dt = 0.05;                          // cap jank / hidden-tab gaps
     Anim.T += dt;
+    Finale.update(Anim.T, dt);                         // owns coherence while the arc resolves
     Field.step(Anim.T, dt);
     Seats.update(Anim.T);
     Ceremony.update(Anim.T);
@@ -768,10 +784,18 @@ const DiscComplete = {
     trace.setAttribute("stroke-dasharray", len.toFixed(2));
     trace.setAttribute("stroke-dashoffset", len.toFixed(2));
     const sealG = this._discSeal(d);
+    d._trace = trace; d._discSeal = sealG;         // kept for the finale (align + scored fade)
     Field.stepCoherence(Config.COH_DISC_SNAP);     // larger coherence snap per disc
     Audio.disc();                                  // optional disc-complete voice (brief 4.3)
-    if (Anim.reduced) { trace.setAttribute("stroke-dashoffset", "0"); trace.setAttribute("stroke-opacity", "0.18"); this._drawDiscSeal(sealG, 1); return; }
+    const all = Session.completed.size === Geometry.discs.length;   // third disc -> the arc resolves
+    if (Anim.reduced) {
+      trace.setAttribute("stroke-dashoffset", "0"); trace.setAttribute("stroke-opacity", "0.18");
+      this._drawDiscSeal(sealG, 1);
+      if (all) Finale.arm();
+      return;
+    }
     this.active.push({ d: d, trace: trace, len: len, sealG: sealG, start: Anim.T });
+    if (all) Finale.arm();                          // begins once the disc traces finish
   },
   _discSeal(d) {
     const g = el("g", {}); overlay.appendChild(g);
@@ -803,7 +827,9 @@ const DiscComplete = {
       fill: "none", stroke: "#ffffff", "stroke-width": "1.4", "stroke-opacity": "0.18",
     });
     overlay.appendChild(trace);
-    this._drawDiscSeal(this._discSeal(d), 1);
+    const sealG = this._discSeal(d);
+    this._drawDiscSeal(sealG, 1);
+    d._trace = trace; d._discSeal = sealG;         // kept for the finale (align + scored fade)
   },
   update(T) {
     for (let i = this.active.length - 1; i >= 0; i--) {
@@ -813,6 +839,103 @@ const DiscComplete = {
       this._drawDiscSeal(a.sealG, p);
       if (p >= 1) { a.trace.setAttribute("stroke-opacity", "0.18"); this.active.splice(i, 1); }
     }
+  },
+};
+
+/* ============================================================================
+   Finale / arc (brief 3.6) - the PBHO cycle resolves and returns to readiness.
+   On the third disc completion: the three disc seals ALIGN on the central axis
+   (a bright axis line draws up through the stack while coherence ramps to full),
+   the fully coherent state HOLDS (~4s), then a SCORED reset (6-8s) eases coherence
+   back to idle and fades every seal mark away, the seats settling from sealed
+   luminance to their idle breathing. The reset reads as RESOLUTION, not reboot:
+   the drone runs continuously, nothing is hard-cleared while visible, and the
+   session state is only released once the composition has already eased to a
+   clean idle - from which a new cycle may begin.
+   ============================================================================ */
+const Finale = {
+  state: "off", pending: false, mix: 1, t0: 0, cohStart: 0,
+  axis: null, axisLen: 0, fadeEls: [],
+
+  arm() {
+    if (this.state !== "off" || this.pending) return;
+    if (Anim.reduced) { this._reducedResolve(); return; }   // static resolved state (Phase 6 choreographs)
+    this.pending = true;                                     // align begins once the disc traces finish
+  },
+
+  _smooth(p) { return p * p * (3 - 2 * p); },
+
+  _beginAlign() {
+    this.state = "align"; this.t0 = Anim.T; this.cohStart = Field.coherence;
+    const ax = Geometry.axis;
+    const yb = Geometry.discs[0].cy;                         // bottom disc (GUILD)
+    const yt = Geometry.discs[Geometry.discs.length - 1].cy; // top disc (AGENDA)
+    const line = el("line", {
+      x1: ax.x, y1: yb, x2: ax.x, y2: yt, stroke: "#ffffff",
+      "stroke-opacity": String(Config.FINALE_AXIS_O), "stroke-width": "1.6",
+    });
+    overlay.appendChild(line);
+    const len = line.getTotalLength ? line.getTotalLength() : Math.abs(yb - yt);
+    line.setAttribute("stroke-dasharray", len.toFixed(2));
+    line.setAttribute("stroke-dashoffset", len.toFixed(2));   // draws up from the bottom seal
+    this.axis = line; this.axisLen = len;
+    if (Audio.ready) Audio.scheduleFinale(Anim.T);            // finale voice on the next full bar
+  },
+
+  _beginReset() {
+    this.fadeEls = [];
+    if (this.axis) this.fadeEls.push(this.axis);
+    for (const d of Geometry.discs) {
+      if (d._trace) this.fadeEls.push(d._trace);
+      if (d._discSeal) this.fadeEls.push(d._discSeal.g);
+      for (const s of d.seats) if (s._seal) this.fadeEls.push(s._seal);
+    }
+  },
+
+  update(T, dt) {
+    if (this.pending && DiscComplete.active.length === 0) { this.pending = false; this._beginAlign(); }
+    if (this.state === "off") return;
+
+    if (this.state === "align") {
+      const p = Math.min(1, (T - this.t0) / Config.FINALE_ALIGN);
+      this.axis.setAttribute("stroke-dashoffset", (this.axisLen * (1 - p)).toFixed(2));
+      const c = this.cohStart + (1 - this.cohStart) * this._smooth(p);
+      Field.coherence = Field.cohTarget = c;                 // own the scalar so step() does not fight it
+      if (p >= 1) { this.state = "hold"; this.t0 = T; Field.coherence = Field.cohTarget = 1; }
+
+    } else if (this.state === "hold") {
+      Field.coherence = Field.cohTarget = 1;                 // fully coherent, steady
+      if (T - this.t0 >= Config.FINALE_HOLD) { this.state = "reset"; this.t0 = T; this._beginReset(); }
+
+    } else if (this.state === "reset") {
+      const p = Math.min(1, (T - this.t0) / Config.FINALE_RESET);
+      const m = 1 - this._smooth(p);                         // scored ease 1 -> 0 (resolution)
+      this.mix = m;
+      Field.coherence = Field.cohTarget = m;                 // coherence resolves back to idle
+      for (let i = 0; i < this.fadeEls.length; i++) this.fadeEls[i].setAttribute("opacity", m.toFixed(3));
+      if (p >= 1) this._finish();                            // release state only once visually idle
+    }
+  },
+
+  _finish() {
+    for (let i = 0; i < this.fadeEls.length; i++) {
+      const n = this.fadeEls[i]; if (n.parentNode) n.parentNode.removeChild(n);
+    }
+    this.fadeEls = []; this.axis = null;
+    for (const d of Geometry.discs) {
+      d._trace = null; d._discSeal = null; d.complete = false;
+      for (const s of d.seats) { s._seal = null; s._sealEls = null; s.state = "idle"; s.sealT = 0; }
+    }
+    Session.sealed.clear(); Session.completed.clear();       // released only now -> clean idle, not reboot
+    Field.coherence = 0; Field.cohTarget = 0;
+    this.mix = 1; this.state = "off";
+  },
+
+  // reduced motion: no loop to animate the arc; show the resolved aligned state.
+  _reducedResolve() {
+    this._beginAlign();
+    this.axis.setAttribute("stroke-dashoffset", "0");        // axis fully drawn
+    this.state = "hold";
   },
 };
 
