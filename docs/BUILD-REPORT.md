@@ -18,7 +18,7 @@ tooling and docs (`docs/`, `fonts/` sources, `README`) are not part of the deplo
 | 3 Interaction | **CONFIRMED (sealed)** by Human Architect | state machine, proposal, ceremony drafting + burst, sealed persistence, coherence steps |
 | 4 Audio engine | **CONFIRMED (sealed)** by Human Architect | context, drone, quantized scheduler, stinger pool, voice mgmt, mute bind, dev placeholder tones |
 | 5 Arc | **CONFIRMED (sealed)** by Human Architect | finale on 3rd disc, axis alignment, ~4s hold, scored 6-8s reset to clean idle |
-| 6 Hardening | **BUILT - awaiting confirmation gate** | touch two-step, keyboard order + Enter, reduced-motion arc, performance adaptation, asset hook |
+| 6 Hardening | **CONFIRMED (sealed)** by Human Architect | touch two-step, keyboard order + Enter, reduced-motion arc, performance adaptation, asset hook |
 
 ---
 
@@ -346,10 +346,12 @@ the floor) after the frame rate sits under budget for a sustained window, keepin
 floor on weaker hardware. Truncation keeps the seeded head of the stream, so the field stays
 deterministic for a given final count (C-5).
 
-**Asset integration hook (OI-3):** on first gesture the engine probes `audio/drone.*`,
-`audio/stinger-1..5.*`, `audio/disc-complete.*` (`webm/mp3/ogg/wav`); found files are decoded and used
-(drone loops gaplessly, stingers fill the pool, disc voice on completion), absent ones fail silently.
-Dropping assets into `/audio/` is the only integration step; they are picked up on the next load.
+**Asset integration hook (OI-3):** on first gesture the engine probes the exact brief 4.3 base names -
+`audio/drone.*`, `audio/stinger-01..06.*` (zero-padded), `audio/disc-complete.*`, `audio/finale.*`
+(`webm/mp3/ogg/wav`); found files are decoded and used (drone loops gaplessly, stingers fill the pool,
+disc + finale voices on completion/resolution), absent ones fail silently. Dropping assets into
+`/audio/` is the only integration step; they are picked up on the next load. See the full asset
+delivery contract under the Phase 4 section.
 
 Validation (headless sim): 20 focusable buttons in GUILD->AGENDA order, focus-proposes, Enter and Space
 confirm (other keys no-op); touch first-tap-proposes / second-tap-confirms, seat-switch and tap-elsewhere
@@ -360,7 +362,7 @@ sheds after a sustained under-budget window. Full-arc regression still green.
 
 ## Acceptance criteria (brief 8) - tracking
 
-- [ ] Idle identical on every load (deterministic) - PRNG seeded; verify on reload (Phase 2 flicker pending)
+- [x] Idle identical on every load (deterministic) - PRNG seeded (mulberry32); time-from-load drives all motion, no `Math.random`
 - [x] Hover proposes / exit reverts (Phase 3) - verified in headless sim
 - [x] Rapid clicks -> one ceremony, one stinger (Phase 3 state machine + Phase 4 audio) - verified in sim
 - [x] Bursts land on quantized boundary (Phase 4) - half-bar grid verified in headless audio sim
@@ -368,3 +370,18 @@ sheds after a sustained under-budget window. Full-arc regression still green.
 - [x] Zero network requests beyond the file and `/audio/` (no CDN / third-party; font embedded)
 - [x] Standing text = wordmark + the one sentence, nothing else
 - [x] Usable muted / keyboard-only / reduced motion (Phase 6) - keyboard buttons, touch two-step, reduced-motion arc; verified in sim
+
+---
+
+## Section 8 operator review - PASSED IN FULL (2026-06-07)
+
+The Human Architect's operator review against the brief's Section 8 acceptance criteria PASSED IN FULL
+on **2026-06-07**. All six build-sequence phases are CONFIRMED (sealed). The build is complete at
+**reduced scope (build without deploy)** per the governing PBHO (commit `51e0050`).
+
+**Build seal:** the merge of `claude/ecstatic-cray-PDOQI` into `main` is the build seal for
+AUMX-WEB-001 at reduced scope.
+
+**Deploy gate (P-5):** publish is OUT OF SCOPE for this build and is governed by a separate PBHO. The
+deploy artifact ships audio-ready and silent with `Config.DEV_PLACEHOLDER_AUDIO = false`; real audio
+assets (OI-3), the domain (OI-1), and AutoSSL (P-5) are deferred to that separate publish confirmation.
