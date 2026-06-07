@@ -17,8 +17,8 @@ tooling and docs (`docs/`, `fonts/` sources, `README`) are not part of the deplo
 | 2 Field | **CONFIRMED (sealed)** by Human Architect | particles, turbulence, coherence, seeded idle flicker |
 | 3 Interaction | **CONFIRMED (sealed)** by Human Architect | state machine, proposal, ceremony drafting + burst, sealed persistence, coherence steps |
 | 4 Audio engine | **CONFIRMED (sealed)** by Human Architect | context, drone, quantized scheduler, stinger pool, voice mgmt, mute bind, dev placeholder tones |
-| 5 Arc | **BUILT - awaiting confirmation gate** | finale on 3rd disc, axis alignment, ~4s hold, scored 6-8s reset to clean idle |
-| 6 Hardening | not started | touch, keyboard, reduced motion, performance, asset integration |
+| 5 Arc | **CONFIRMED (sealed)** by Human Architect | finale on 3rd disc, axis alignment, ~4s hold, scored 6-8s reset to clean idle |
+| 6 Hardening | in progress | touch two-step, keyboard order + Enter, reduced-motion arc, performance adaptation, asset hook |
 
 ---
 
