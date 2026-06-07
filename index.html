@@ -52,7 +52,7 @@
   #stage { position: fixed; inset: 0; }
   #field, #overlay { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
   #field  { z-index: 0; }
-  #overlay { z-index: 1; }
+  #overlay { z-index: 1; pointer-events: none; }   /* only seat hit-areas opt back in */
 
   /* ---- Standing text (complete inventory: wordmark + creed) -------------------- */
   .wordmark {
@@ -202,6 +202,22 @@ const Config = {
   PULSE_DUR:        1.7,     // pulse envelope duration (sec)
   PULSE_GAIN:       0.5,     // added brightness at pulse peak (frac of base)
 
+  // ---- Interaction / ceremony (brief 3.4 / 3.5) ----
+  // Hover proposes, click confirms. Drafting is REGISTRATION, never deliberation.
+  DRAFT_DURATION:  1.75,     // seal drafting time (sec); range 1.5-2.0; elastic to grid (Phase 4)
+  BURST_DURATION:  0.42,     // register-burst / flicker envelope (sec)
+  PROPOSE_PULL_R:  140,      // px horizontal radius of thread convergence at a proposed seat
+  PROPOSE_PULL:    0.85,     // convergence strength (0..1)
+  PROPOSE_HOLD:    0.85,     // flow slow-down ("hold") near a proposed seat (0..1)
+  COH_SEAT_STEP:   0.025,    // coherence step added per sealed seat
+  COH_DISC_SNAP:   0.08,     // extra coherence snapped per completed disc
+  COH_MAX_PREFINALE: 0.82,   // coherence cap before the finale (Phase 5 -> full)
+  COH_EASE:        6,        // coherence easing rate toward target (per sec)
+  SEAL_R:          0.94,     // seal radius as fraction of seat outer-hex radius
+  LABEL_SIZE:      11,       // px, Space Mono hover label
+  LABEL_DY:        16,       // px label offset above the seat
+  DISC_TRACE_DUR:  1.1,      // disc-complete circumference trace (sec)
+
   SEED: 0x4155_4d58,         // fixed seed "AUMX" -> deterministic idle (brief 3.2)
 };
 
@@ -245,6 +261,7 @@ const Geometry = {
         phase: prng(),     // 0..1 offset into the period
         v: 0,              // current pulse contribution, updated per frame
       };
+      d.complete = false;  // becomes true when every seat on the disc is sealed
     }
 
     // Central spine: through the stack, then extended up into the reserved
@@ -287,7 +304,9 @@ const Geometry = {
         // seeded idle-flicker params (deterministic breathing, brief 3.2 / C-5)
         phase: prng() * Math.PI * 2,
         rate: Config.FLICKER_RATE * (1 + (prng() * 2 - 1) * Config.FLICKER_RATE_VAR),
-        _outer: null, _inner: null,   // SVG refs attached by Scene
+        // interaction state machine (brief 3.4): idle|proposed|ceremony|sealed
+        state: "idle", sealT: 0,
+        _outer: null, _inner: null, _hit: null, _group: null, _seal: null, _sealEls: null,
       });
     }
     // draw back-to-front so front seats overlap correctly
@@ -392,8 +411,16 @@ const Scene = {
         fill: "none", stroke: L,
         "stroke-opacity": (s.op * Config.SEAT_O_INNER).toFixed(3), "stroke-width": "0.7",
       });
+      // transparent hit-area (the overlay is pointer-events:none; seats opt back in)
+      s._hit = el("polygon", {
+        points: hexPoints(s.x, s.y, s.r * 1.5, Config.SEAT_HEX_SQUASH),
+        fill: "#000", "fill-opacity": "0", "pointer-events": "all",
+      });
+      s._hit.style.cursor = "pointer";
+      s._group = seat;
       seat.appendChild(s._outer);
       seat.appendChild(s._inner);
+      seat.appendChild(s._hit);              // last -> on top for hit testing
       sg.appendChild(seat);
     }
     svg.appendChild(sg);
@@ -440,8 +467,16 @@ function makeNoise2D(seed) {
    `coherence` scalar is the seam Phase 3 raises per sealed seat/disc.           */
 const Field = {
   cv: null, ctx: null, dpr: 1, w: 0, h: 0,
-  noise: null, particles: [], coherence: 0,
+  noise: null, particles: [], coherence: 0, cohTarget: 0,
+  proposals: [],                    // active PROPOSED seats: threads converge + hold
   stackCx: 0, upLeft: 0,            // stack center x, upstream edge x (for gradient)
+
+  // coherence steps per sealed seat / disc (brief 3.4); eased toward target in step()
+  stepCoherence(delta) {
+    this.cohTarget = Math.min(Config.COH_MAX_PREFINALE, this.cohTarget + delta);
+  },
+  addProposal(s) { if (this.proposals.indexOf(s) < 0) this.proposals.push(s); },
+  clearProposal(s) { const i = this.proposals.indexOf(s); if (i >= 0) this.proposals.splice(i, 1); },
 
   init(canvas) {
     this.cv = canvas;
@@ -507,19 +542,29 @@ const Field = {
   },
 
   step(T, dt) {
+    // ease coherence toward its target so seat/disc steps read as a snap
+    this.coherence += (this.cohTarget - this.coherence) * Math.min(1, dt * Config.COH_EASE);
     const ctx = this.ctx, w = this.w;
     this._base(ctx);
     const FX = Config.NOISE_FREQ_X, FY = Config.NOISE_FREQ_Y, FX2 = Config.NOISE_FREQ_X2;
     const TT = T * Config.NOISE_TIME, amp = Config.FIELD_AMP, sz = Config.FIELD_DOT_SIZE;
+    const props = this.proposals, R = Config.PROPOSE_PULL_R;
     ctx.globalCompositeOperation = "lighter";
     ctx.fillStyle = "#ffffff";
     for (let k = 0; k < this.particles.length; k++) {
       const p = this.particles[k];
-      p.x += p.speed * dt;
+      // proposal convergence: nearest proposed seat within R pulls + holds
+      let infl = 0, py = 0;
+      for (let j = 0; j < props.length; j++) {
+        const d = Math.abs(p.x - props[j].x);
+        if (d < R) { const wv = 1 - d / R; if (wv > infl) { infl = wv; py = props[j].y; } }
+      }
+      p.x += p.speed * dt * (1 - Config.PROPOSE_HOLD * infl);
       if (p.x > w + 20) p.x -= (w + 40);              // wrap, deterministic
       const n = this.noise(p.x * FX, p.baseY * FY + TT)
               + 0.5 * this.noise(p.x * FX2, p.baseY * FY * 2 + TT * 1.3);
-      const y = p.baseY + amp * (1 - this._coh(p.x)) * n;
+      let y = p.baseY + amp * (1 - this._coh(p.x)) * n;
+      if (infl > 0) y += (py - y) * (infl * Config.PROPOSE_PULL);   // converge + hold
       ctx.globalAlpha = p.alpha;
       ctx.fillRect(p.x, y, sz, sz);
     }
@@ -551,8 +596,16 @@ const Seats = {
     }
     for (let k = 0; k < this.list.length; k++) {
       const s = this.list[k].s, pulse = this.list[k].d.pulse.v;
-      const breathe = 1 + Config.FLICKER_DEPTH * Math.sin(T * s.rate + s.phase);
-      let op = s.op * breathe + s.op * pulse;
+      let op;
+      if (s.state === "idle") {                         // seeded breathing + disc pulse
+        const breathe = 1 + Config.FLICKER_DEPTH * Math.sin(T * s.rate + s.phase);
+        op = s.op * breathe + s.op * pulse;
+      } else if (s.state === "sealed") {                // persistent bright; register flicker at seal
+        const u = (T - s.sealT) / Config.BURST_DURATION;
+        op = u < 1 ? 0.45 + 0.55 * Math.abs(Math.sin(u * Math.PI * 4)) : 1;
+      } else {                                          // proposed / ceremony: locks bright
+        op = 1;
+      }
       if (op > 1) op = 1; else if (op < 0) op = 0;
       if (s._outer) s._outer.setAttribute("stroke-opacity", op.toFixed(3));
       if (s._inner) s._inner.setAttribute("stroke-opacity", (op * Config.SEAT_O_INNER).toFixed(3));
@@ -578,7 +631,214 @@ const Anim = {
     Anim.T += dt;
     Field.step(Anim.T, dt);
     Seats.update(Anim.T);
+    Ceremony.update(Anim.T);
+    DiscComplete.update(Anim.T);
     requestAnimationFrame(Anim._tick);
+  },
+};
+
+/* ---- Session: sealed state persists for the session (brief 3.6) ------------- */
+const Session = { sealed: new Set(), completed: new Set() };
+
+/* ---- Clock: quantization seam. Phase 4 swaps this for the AudioContext grid
+   (one-shots to the next half-bar/bar). The drafting fills the wait; the burst
+   lands at the returned time. Silent for now, timing structure preserved.       */
+const Clock = {
+  nextBurst(now) { return now + Config.DRAFT_DURATION; },
+};
+
+/* ---- Ceremony: the click registers; the seal drafts then bursts (brief 3.5)
+   Drafting is REGISTRATION, not deliberation - the system writes the record and
+   cuts the seal; it never evaluates the human act (C-4). Seal geometry is
+   PROVISIONAL pending OI-2; the Datum Cross is the only confirmed mark.         */
+const Ceremony = {
+  active: [],
+  start(s, d) {
+    if (s.state !== "proposed" && s.state !== "idle") return;  // ceremony/sealed ignore input
+    s.state = "ceremony";                  // authority transfers at the click; input closes
+    Field.clearProposal(s);
+    Machine.hideLabel();
+    this.buildSeal(s);
+    if (Anim.reduced) { this._seal(s, d); return; }   // reduced motion: straight to SEALED
+    const t0 = Anim.T;
+    this.active.push({ s: s, d: d, start: t0, burstAt: Clock.nextBurst(t0) });
+  },
+  buildSeal(s) {
+    const g = el("g", { "data-seal": s.id });
+    s._group.insertBefore(g, s._hit);      // under the hit-area
+    const x = s.x, y = s.y, sq = Config.SEAT_HEX_SQUASH, R = s.r * Config.SEAL_R;
+    const els = [];
+    const arc = (r, a0, a1) => {
+      const A0 = a0 * Math.PI / 180, A1 = a1 * Math.PI / 180;
+      const x0 = x + r * Math.cos(A0), y0 = y + r * sq * Math.sin(A0);
+      const x1 = x + r * Math.cos(A1), y1 = y + r * sq * Math.sin(A1);
+      const la = (A1 - A0) > Math.PI ? 1 : 0;
+      return "M " + x0 + " " + y0 + " A " + r + " " + (r * sq) + " 0 " + la + " 1 " + x1 + " " + y1;
+    };
+    const mk = (node, o, s0, s1) => {
+      node.setAttribute("fill", "none");
+      node.setAttribute("stroke", "#ffffff");
+      node.setAttribute("stroke-opacity", String(o));
+      node.setAttribute("stroke-width", "1");
+      g.appendChild(node);
+      const len = node.getTotalLength ? node.getTotalLength() : 2 * R;
+      node.setAttribute("stroke-dasharray", len.toFixed(2));
+      node.setAttribute("stroke-dashoffset", len.toFixed(2));
+      els.push({ el: node, len: len, s0: s0, s1: s1 });
+    };
+    // set-out / datum construction lines, then compass circle + arc, then datum cross
+    mk(el("line", { x1: x - R, y1: y - R * sq, x2: x + R, y2: y + R * sq }), 0.36, 0.00, 0.30);
+    mk(el("line", { x1: x - R, y1: y + R * sq, x2: x + R, y2: y - R * sq }), 0.36, 0.05, 0.35);
+    mk(el("ellipse", { cx: x, cy: y, rx: R, ry: R * sq }), 0.70, 0.18, 0.62);
+    mk(el("path", { d: arc(R * 0.62, -40, 150) }), 0.72, 0.42, 0.82);
+    mk(el("line", { x1: x - R, y1: y, x2: x + R, y2: y }), 0.92, 0.58, 0.90);          // datum cross
+    mk(el("line", { x1: x, y1: y - R * sq, x2: x, y2: y + R * sq }), 0.92, 0.72, 1.00);
+    s._seal = g; s._sealEls = els;
+  },
+  drawProgress(s, p) {
+    const els = s._sealEls; if (!els) return;
+    for (let i = 0; i < els.length; i++) {
+      const e = els[i];
+      let l = (p - e.s0) / (e.s1 - e.s0);
+      l = l < 0 ? 0 : l > 1 ? 1 : l;
+      e.el.setAttribute("stroke-dashoffset", (e.len * (1 - l)).toFixed(2));
+    }
+  },
+  update(T) {
+    for (let i = this.active.length - 1; i >= 0; i--) {
+      const c = this.active[i];
+      const p = Math.min(1, (T - c.start) / (c.burstAt - c.start));
+      this.drawProgress(c.s, p);
+      if (T >= c.burstAt) { this._seal(c.s, c.d); this.active.splice(i, 1); }   // burst
+    }
+  },
+  _seal(s, d) {
+    s.state = "sealed"; s.sealT = Anim.T;          // register flicker handled in Seats.update
+    this.drawProgress(s, 1);
+    Session.sealed.add(s.id);
+    Field.stepCoherence(Config.COH_SEAT_STEP);     // downstream threads snap a coherence step
+    if (d.seats.every((x) => x.state === "sealed")) DiscComplete.fire(d);
+    if (Anim.reduced) Seats.update(Anim.T);
+  },
+};
+
+/* ---- DiscComplete: ellipse traces once; disc seal registers on the axis ----- */
+const DiscComplete = {
+  active: [],
+  fire(d) {
+    if (d.complete) return;
+    d.complete = true;
+    Session.completed.add(d.id);
+    const trace = el("ellipse", {
+      cx: d.cx, cy: d.cy, rx: d.rx, ry: d.ry,
+      fill: "none", stroke: "#ffffff", "stroke-width": "1.4", "stroke-opacity": "0.85",
+    });
+    overlay.appendChild(trace);
+    const len = trace.getTotalLength ? trace.getTotalLength() : 2 * Math.PI * d.rx;
+    trace.setAttribute("stroke-dasharray", len.toFixed(2));
+    trace.setAttribute("stroke-dashoffset", len.toFixed(2));
+    const sealG = this._discSeal(d);
+    Field.stepCoherence(Config.COH_DISC_SNAP);     // larger coherence snap per disc
+    if (Anim.reduced) { trace.setAttribute("stroke-dashoffset", "0"); trace.setAttribute("stroke-opacity", "0.18"); this._drawDiscSeal(sealG, 1); return; }
+    this.active.push({ d: d, trace: trace, len: len, sealG: sealG, start: Anim.T });
+  },
+  _discSeal(d) {
+    const g = el("g", {}); overlay.appendChild(g);
+    const x = d.cx, y = d.cy, sq = Config.SEAT_HEX_SQUASH, R = Math.max(13, d.ry * 0.85);
+    const els = [];
+    const mk = (node, o) => {
+      node.setAttribute("fill", "none"); node.setAttribute("stroke", "#ffffff");
+      node.setAttribute("stroke-opacity", String(o)); node.setAttribute("stroke-width", "1.2");
+      g.appendChild(node);
+      const len = node.getTotalLength ? node.getTotalLength() : 2 * R;
+      node.setAttribute("stroke-dasharray", len.toFixed(2));
+      node.setAttribute("stroke-dashoffset", len.toFixed(2));
+      els.push({ el: node, len: len });
+    };
+    mk(el("ellipse", { cx: x, cy: y, rx: R, ry: R * sq }), 0.80);
+    mk(el("line", { x1: x - R, y1: y, x2: x + R, y2: y }), 0.92);
+    mk(el("line", { x1: x, y1: y - R * sq, x2: x, y2: y + R * sq }), 0.92);
+    return { g: g, els: els };
+  },
+  _drawDiscSeal(sealG, p) {
+    for (let i = 0; i < sealG.els.length; i++) {
+      const e = sealG.els[i];
+      e.el.setAttribute("stroke-dashoffset", (e.len * (1 - p)).toFixed(2));
+    }
+  },
+  drawSettled(d) {   // instant restore (resize / reduced motion)
+    const trace = el("ellipse", {
+      cx: d.cx, cy: d.cy, rx: d.rx, ry: d.ry,
+      fill: "none", stroke: "#ffffff", "stroke-width": "1.4", "stroke-opacity": "0.18",
+    });
+    overlay.appendChild(trace);
+    this._drawDiscSeal(this._discSeal(d), 1);
+  },
+  update(T) {
+    for (let i = this.active.length - 1; i >= 0; i--) {
+      const a = this.active[i];
+      const p = Math.min(1, (T - a.start) / Config.DISC_TRACE_DUR);
+      a.trace.setAttribute("stroke-dashoffset", (a.len * (1 - p)).toFixed(2));
+      this._drawDiscSeal(a.sealG, p);
+      if (p >= 1) { a.trace.setAttribute("stroke-opacity", "0.18"); this.active.splice(i, 1); }
+    }
+  },
+};
+
+/* ---- Machine: hover proposes, click confirms (brief 3.4) -------------------- */
+const Machine = {
+  label: null,
+  bind(geo) {
+    const t = el("text", {
+      x: 0, y: 0, "text-anchor": "middle",
+      "font-family": '"Space Mono", monospace', "font-size": String(Config.LABEL_SIZE),
+      "letter-spacing": "1.5", fill: "#ffffff", "fill-opacity": "0.72", "pointer-events": "none",
+    });
+    t.style.display = "none";
+    overlay.appendChild(t);
+    this.label = t;
+    for (const d of geo.discs) for (const s of d.seats) {
+      const hit = s._hit, sd = s, dd = d;
+      hit.addEventListener("pointerenter", () => this.onEnter(sd, dd));
+      hit.addEventListener("pointerleave", () => this.onLeave(sd, dd));
+      hit.addEventListener("pointerdown", (e) => { e.preventDefault(); this.onDown(sd, dd); });
+    }
+  },
+  onEnter(s, d) {
+    if (s.state === "idle") { s.state = "proposed"; Field.addProposal(s); }   // hover = proposal
+    if (s.state === "proposed" || s.state === "sealed") this.showLabel(s, d); // labels: proposed + sealed
+    if (Anim.reduced) Seats.update(Anim.T);
+  },
+  onLeave(s, d) {
+    if (s.state === "proposed") { s.state = "idle"; Field.clearProposal(s); } // reverts on exit
+    this.hideLabel();
+    if (Anim.reduced) Seats.update(Anim.T);
+  },
+  onDown(s, d) {
+    if (s.state === "proposed") Ceremony.start(s, d);   // the human click is the only governed act
+  },
+  showLabel(s, d) {
+    const t = this.label; if (!t) return;
+    t.textContent = (d.index + " " + d.name + "  SEAT " + s.seatNo).toUpperCase();
+    t.setAttribute("x", s.x.toFixed(1));
+    t.setAttribute("y", (s.y - s.r * Config.SEAT_HEX_SQUASH - Config.LABEL_DY).toFixed(1));
+    t.style.display = "";
+  },
+  hideLabel() { if (this.label) this.label.style.display = "none"; },
+};
+
+/* ---- Restore: re-apply persisted seals after a layout rebuild (resize) ------ */
+const Restore = {
+  apply(geo) {
+    for (const d of geo.discs) {
+      for (const s of d.seats) {
+        if (Session.sealed.has(s.id)) {
+          s.state = "sealed"; s.sealT = -1e9;   // steady (no burst flicker on restore)
+          Ceremony.buildSeal(s); Ceremony.drawProgress(s, 1);
+        }
+      }
+      if (Session.completed.has(d.id)) { d.complete = true; DiscComplete.drawSettled(d); }
+    }
   },
 };
 
@@ -626,9 +886,12 @@ function layout() {
   Field.build(geo);
   Scene.build(overlay, geo);
   Seats.bind(geo);
+  Machine.bind(geo);
+  Restore.apply(geo);          // re-apply seals persisted across a layout rebuild
   if (Anim.reduced) {
     // Full composition static, seats dim-lit, no field animation (brief 3 / C-5).
     Field.renderStatic();
+    Seats.update(Anim.T);      // show any restored sealed seats at full luminance
   } else {
     Field.step(Anim.T, 0);     // paint current frame immediately (no jump on resize)
     Seats.update(Anim.T);

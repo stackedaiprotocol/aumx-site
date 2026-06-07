@@ -15,8 +15,8 @@ tooling and docs (`docs/`, `fonts/` sources, `README`) are not part of the deplo
 |---|---|---|
 | 1 Static composition | **CONFIRMED (sealed)** by Human Architect | discs, seats, tilt, wordmark, creed, mute geometry; rev 2 composition amendments |
 | 2 Field | **CONFIRMED (sealed)** by Human Architect | particles, turbulence, coherence, seeded idle flicker |
-| 3 Interaction | in progress | state machine, proposal, ceremony, sealed persistence |
-| 4 Audio engine | not started | context, drone, quantized scheduler, stinger pool, voice mgmt, mute bind |
+| 3 Interaction | **CONFIRMED (sealed)** by Human Architect | state machine, proposal, ceremony drafting + burst, sealed persistence, coherence steps |
+| 4 Audio engine | in progress | context, drone, quantized scheduler, stinger pool, voice mgmt, mute bind |
 | 5 Arc | not started | disc completions, finale, hold, scored reset |
 | 6 Hardening | not started | touch, keyboard, reduced motion, performance, asset integration |
 
@@ -137,12 +137,56 @@ load. Discs never move or pulse as bodies; only seats carry light.
 
 ---
 
+## Phase 3 - interaction (brief 3.4 / 3.5) - tuned values (P-1)
+
+State machine per seat: `idle -> proposed -> ceremony -> sealed`; disc state `complete`. Hover is
+proposal, the click is the only governed act (C-4: drafting is REGISTRATION, never deliberation - no
+element evaluates, scores, or approves the human). Anti-retrigger is enforced by the state machine,
+not a debounce: `ceremony` and `sealed` seats ignore all input, so rapid clicks yield exactly one
+ceremony. Audio is Phase 4 - ceremonies render silent for now; the `Clock.nextBurst()` seam is shaped
+to accept the Phase-4 quantized AudioContext scheduler (one-shots to the next half-bar/bar).
+
+| Parameter | Value | Source |
+|---|---|---|
+| Draft duration | 1.75 s (range 1.5-2.0; elastic to grid in Phase 4) | `Config.DRAFT_DURATION` |
+| Burst / register-flicker | 0.42 s envelope | `Config.BURST_DURATION` |
+| Proposal thread convergence | radius 140 px, pull 0.85, flow hold 0.85 | `Config.PROPOSE_*` |
+| Coherence step per sealed seat | +0.025 | `Config.COH_SEAT_STEP` |
+| Coherence snap per completed disc | +0.08 | `Config.COH_DISC_SNAP` |
+| Coherence cap pre-finale | 0.82 (Phase 5 finale -> full); eased at 6/s | `Config.COH_MAX_PREFINALE` / `COH_EASE` |
+| Seal radius | 0.94 x seat outer-hex radius | `Config.SEAL_R` |
+| Hover label | Space Mono 11 px, uppercase, opacity 0.72, 16 px above seat | `Config.LABEL_*` |
+| Disc-complete trace | 1.1 s circumference draw, settles to opacity 0.18 | `Config.DISC_TRACE_DUR` |
+
+Coherence math check (headless sim): 20 seats x 0.025 + 3 discs x 0.08 = 0.74 target (under the 0.82
+pre-finale cap), leaving room for the Phase 5 finale to take it to full. One disc complete = 0.230,
+verified.
+
+Ceremony / seal: on click the seat locks to full luminance and input closes; the provisional seal
+drafts via SVG `stroke-dashoffset` (set-out datum lines -> compass circle -> compass arc -> Datum
+Cross), staggered, over the draft duration; at the scheduled burst time the seat register-flickers,
+the seal settles as a permanent mark, and downstream threads snap a coherence step. When all seats on
+a disc are sealed, the disc ellipse traces its circumference once and a disc seal registers on the
+central axis. Seals persist for the session and are restored across a layout rebuild (resize) via
+`Session` + `Restore` (verified 6/6 in the headless sim).
+
+Deferred to Phase 6 (per build sequence): keyboard focus order + Enter, and the touch two-step
+(first tap proposes, second confirms). Reduced motion currently seals immediately (cross-fade)
+rather than drafting; the full reduced-motion ceremony cross-fade is a Phase 6 hardening item.
+
+Validation: `node --check` clean; headless DOM-stub simulation passes full agenda-disc completion,
+rapid-click -> exactly one ceremony, coherence = 0.230 after one disc, and 6/6 seal restore after a
+simulated resize.
+
+---
+
 ## Provisional seal geometry (P-3 / OI-2)
 
-- **Not yet drawn** (seals are Phase 3/5). The central vertical **axis column** is laid in as the
-  line the disc seals will later draw into; each seat's **inner hex** reserves the host area for its
-  future seal draft. The **Datum Cross** remains the only confirmed canonical mark; all per-disc seal
-  geometry will be implemented as PROVISIONAL and flagged in code + here.
+- **Drawn as of Phase 3, PROVISIONAL.** Seat seal = set-out datum construction lines + compass circle
+  + compass arc + **Datum Cross** (the only confirmed canonical mark). Disc seal (on the central axis)
+  = squashed ring + Datum Cross. All flagged provisional in code and here; final per-disc canonical
+  geometry awaits the OI-2 design pass. The central vertical **axis column** remains the line the disc
+  seals register onto; each seat's **inner hex** hosts its seal draft.
 
 ---
 
@@ -170,8 +214,8 @@ load. Discs never move or pulse as bodies; only seats carry light.
 ## Acceptance criteria (brief 8) - tracking
 
 - [ ] Idle identical on every load (deterministic) - PRNG seeded; verify on reload (Phase 2 flicker pending)
-- [ ] Hover proposes / exit reverts (Phase 3)
-- [ ] Rapid clicks -> one ceremony, one stinger (Phase 3/4)
+- [x] Hover proposes / exit reverts (Phase 3) - verified in headless sim
+- [~] Rapid clicks -> one ceremony (Phase 3, verified); one stinger pending audio (Phase 4)
 - [ ] Bursts land on quantized boundary (Phase 4)
 - [ ] Full 20-seat arc -> 3 disc completions -> finale -> scored reset (Phase 5)
 - [x] Zero network requests beyond the file and `/audio/` (no CDN / third-party; font embedded)
