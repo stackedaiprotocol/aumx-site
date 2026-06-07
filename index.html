@@ -6,9 +6,9 @@
 
   BUILD PHASE STATUS
     [x] Phase 1  Static composition (this file): discs, seats, tilt, wordmark, creed, mute geometry.
-    [ ] Phase 2  Field: particles, turbulence, coherence, seeded idle flicker.
-    [ ] Phase 3  Interaction: state machine, proposal, ceremony drafting + burst, sealed persistence.
-    [ ] Phase 4  Audio engine: context, drone, quantized scheduler, stinger pool, voice mgmt, mute.
+    [x] Phase 2  Field: particles, turbulence, coherence, seeded idle flicker.
+    [x] Phase 3  Interaction: state machine, proposal, ceremony drafting + burst, sealed persistence.
+    [~] Phase 4  Audio engine: context, drone, quantized scheduler, stinger pool, voice mgmt, mute.
     [ ] Phase 5  Arc: disc completions, finale, hold, scored reset.
     [ ] Phase 6  Hardening: touch, keyboard, reduced motion, performance, asset integration.
 
@@ -217,6 +217,28 @@ const Config = {
   LABEL_SIZE:      11,       // px, Space Mono hover label
   LABEL_DY:        16,       // px label offset above the seat
   DISC_TRACE_DUR:  1.1,      // disc-complete circumference trace (sec)
+
+  // ---- Audio engine (brief 4.1 / 4.2 / 4.4) ----
+  // SILENT BY DEFAULT. Real assets are OI-3 (NOT delivered): used if present,
+  // otherwise the engine stays armed and silent. Synthesized PLACEHOLDER tones
+  // (clearly not canon) sit behind the flag below so the quantized timing is
+  // reviewable without assets. The flag MUST be OFF for any deploy (P-2).
+  DEV_PLACEHOLDER_AUDIO: false,  // synth placeholder tones for review; OFF for deploy (P-2)
+  AUDIO_MASTER:        0.5,   // master gain when unmuted
+  AUDIO_BPM:           72,    // placeholder grid tempo; real value declared on drone delivery (OI-3)
+  AUDIO_BEATS_PER_BAR: 4,     // placeholder meter; declared on drone delivery (OI-3)
+  AUDIO_QUANTIZE_DIV:  2,     // one-shots quantize to bar / this -> half-bar (brief 4.2)
+  AUDIO_POLYPHONY:     6,     // max concurrent stinger voices; oldest fades (brief 4.1)
+  AUDIO_STINGERS:      5,     // stinger pool size (range 3-6, brief 4.1)
+  AUDIO_DUCK:          0.7,   // drone gain multiplier while a stinger rings (optional duck)
+  AUDIO_DUCK_REL:      0.45,  // drone duck release toward baseline (sec)
+  // Placeholder voice params (synth only; NOT canon - real assets are OI-3):
+  PH_DRONE_HZ:      55,       // A1 root for the placeholder drone (root + fifth)
+  PH_DRONE_GAIN:    0.16,
+  PH_STINGER_GAIN:  0.22,
+  PH_STINGER_DECAY: 0.7,
+  PH_DISC_GAIN:     0.18,
+  PH_DISC_DECAY:    1.6,
 
   SEED: 0x4155_4d58,         // fixed seed "AUMX" -> deterministic idle (brief 3.2)
 };
@@ -640,11 +662,16 @@ const Anim = {
 /* ---- Session: sealed state persists for the session (brief 3.6) ------------- */
 const Session = { sealed: new Set(), completed: new Set() };
 
-/* ---- Clock: quantization seam. Phase 4 swaps this for the AudioContext grid
-   (one-shots to the next half-bar/bar). The drafting fills the wait; the burst
-   lands at the returned time. Silent for now, timing structure preserved.       */
+/* ---- Clock: quantization seam, now backed by the AudioContext grid (4.2).
+   When audio is armed, the burst is pulled to the next half-bar boundary and
+   the stinger is scheduled on the same AudioContext clock, so the drafting
+   fills the wait and the burst lands exactly on the beat. Before the first
+   gesture (no AudioContext yet) it falls back to the plain draft duration.     */
 const Clock = {
-  nextBurst(now) { return now + Config.DRAFT_DURATION; },
+  nextBurst(now) {
+    if (Audio.ready) return Audio.scheduleBurst(now);   // grid-aligned + schedules the stinger
+    return now + Config.DRAFT_DURATION;                 // pre-gesture fallback (silent, un-gridded)
+  },
 };
 
 /* ---- Ceremony: the click registers; the seal drafts then bursts (brief 3.5)
@@ -718,7 +745,10 @@ const Ceremony = {
     Session.sealed.add(s.id);
     Field.stepCoherence(Config.COH_SEAT_STEP);     // downstream threads snap a coherence step
     if (d.seats.every((x) => x.state === "sealed")) DiscComplete.fire(d);
-    if (Anim.reduced) Seats.update(Anim.T);
+    if (Anim.reduced) {                            // reduced motion: seal is instant; sound still fires
+      if (Audio.ready) Audio.playStinger(Audio.ctx.currentTime + 0.02);
+      Seats.update(Anim.T);
+    }
   },
 };
 
@@ -739,6 +769,7 @@ const DiscComplete = {
     trace.setAttribute("stroke-dashoffset", len.toFixed(2));
     const sealG = this._discSeal(d);
     Field.stepCoherence(Config.COH_DISC_SNAP);     // larger coherence snap per disc
+    Audio.disc();                                  // optional disc-complete voice (brief 4.3)
     if (Anim.reduced) { trace.setAttribute("stroke-dashoffset", "0"); trace.setAttribute("stroke-opacity", "0.18"); this._drawDiscSeal(sealG, 1); return; }
     this.active.push({ d: d, trace: trace, len: len, sealG: sealG, start: Anim.T });
   },
@@ -815,6 +846,7 @@ const Machine = {
     if (Anim.reduced) Seats.update(Anim.T);
   },
   onDown(s, d) {
+    Audio.unlock();                                     // first gesture arms the AudioContext (4.4)
     if (s.state === "proposed") Ceremony.start(s, d);   // the human click is the only governed act
   },
   showLabel(s, d) {
@@ -849,8 +881,11 @@ const Mute = {
   init(btn) {
     this.btn = btn;
     this.render();
-    btn.addEventListener("click", () => { this.muted = !this.muted; this.render(); });
-    // Phase 4 will bind this to the audio master gain.
+    btn.addEventListener("click", () => {
+      this.muted = !this.muted; this.render();
+      Audio.unlock();              // a mute toggle is a gesture too: arm the context
+      Audio.setMuted(this.muted);  // bound to the audio master gain (brief 4.4)
+    });
   },
   render() {
     const on = !this.muted;
@@ -871,6 +906,196 @@ const Mute = {
   },
 };
 
+/* ============================================================================
+   Audio engine (brief 4.1 / 4.2 / 4.4) - separable module (C-7)
+   One AudioContext, suspended until the first user gesture (4.4). Gapless drone
+   -> master gain. Quantized one-shot scheduler on the AudioContext clock: bursts
+   land on the next half-bar, the finale on the next full bar (4.2). Round-robin
+   stinger pool (no immediate repeat) with a polyphony cap of 6, oldest voice
+   gain-faded (4.1). Optional drone duck while a stinger rings.
+
+   SILENT BY DEFAULT. Real assets are OI-3 (NOT delivered): an asset is used if
+   present, otherwise the engine stays armed and silent. Synthesized PLACEHOLDER
+   tones (clearly NOT canon) are available behind Config.DEV_PLACEHOLDER_AUDIO
+   (default OFF; MUST be OFF for deploy, P-2) so the quantized timing is
+   reviewable without assets. Built to fork cleanly for SS-BOOM-001 (C-7).
+   ============================================================================ */
+const Audio = {
+  ctx: null, ready: false, master: null, droneGain: null, droneBase: 0,
+  gridOrigin: 0, beat: 0, bar: 0, div: 0,
+  voices: [],                            // live stinger voices, for the polyphony cap
+  stingerIdx: 0, lastStinger: -1,
+  buffers: { drone: null, stingers: [], disc: null },
+  phFreqs: [440.00, 523.25, 587.33, 659.25, 783.99],  // PLACEHOLDER pentatonic (A C D E G)
+
+  // First gesture: create + resume the context, anchor the bar grid, start the
+  // drone (asset or placeholder), and kick off the async asset probe. Idempotent.
+  unlock() {
+    if (this.ctx) { if (this.ctx.state === "suspended") this.ctx.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;                     // no Web Audio -> stay silent, visuals unaffected
+    const ctx = this.ctx = new AC();
+    this.beat = 60 / Config.AUDIO_BPM;
+    this.bar  = this.beat * Config.AUDIO_BEATS_PER_BAR;
+    this.div  = this.bar / Config.AUDIO_QUANTIZE_DIV;   // half-bar one-shot grid (4.2)
+    const master = this.master = ctx.createGain();
+    master.gain.value = Mute.muted ? 0 : Config.AUDIO_MASTER;
+    master.connect(ctx.destination);
+    this.droneGain = ctx.createGain();
+    this.droneGain.gain.value = 0;
+    this.droneGain.connect(master);
+    ctx.resume();
+    this.gridOrigin = ctx.currentTime;   // bar 0 anchor for all quantization
+    this.ready = true;
+    this._startDrone();
+    this._loadAssets();                  // async; swaps in real assets if present
+  },
+
+  setMuted(m) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    this.master.gain.cancelScheduledValues(t);
+    this.master.gain.setTargetAtTime(m ? 0 : Config.AUDIO_MASTER, t, 0.04);
+  },
+
+  // next grid boundary >= t (ctx seconds), anchored to the drone/grid origin
+  nextDivision(t, div) {
+    const n = Math.ceil((t - this.gridOrigin) / div - 1e-4);
+    return this.gridOrigin + n * div;
+  },
+
+  // Pull the burst to the next half-bar and schedule the stinger there; return
+  // the matching VISUAL time so the drafting completes exactly on the beat (4.2).
+  scheduleBurst(visualNow) {
+    const now = this.ctx.currentTime;
+    const target = this.nextDivision(now + Config.DRAFT_DURATION, this.div);
+    this.playStinger(target);
+    return visualNow + (target - now);
+  },
+
+  // Finale aligns on the next full bar (Phase 5 wires the visual finale to this).
+  scheduleFinale(visualNow) {
+    const now = this.ctx.currentTime;
+    const target = this.nextDivision(now + Config.DRAFT_DURATION, this.bar);
+    this.playDisc(target);
+    return visualNow + (target - now);
+  },
+
+  // Optional disc-complete voice (brief 4.3 / amendment 2): on the next full bar.
+  disc() {
+    if (!this.ready) return;
+    this.playDisc(this.nextDivision(this.ctx.currentTime, this.bar));
+  },
+
+  _duck(when) {
+    if (!this.droneGain || this.droneBase <= 0) return;
+    const g = this.droneGain.gain;
+    g.cancelScheduledValues(when);
+    g.setValueAtTime(this.droneBase * Config.AUDIO_DUCK, when);
+    g.setTargetAtTime(this.droneBase, when + 0.02, Config.AUDIO_DUCK_REL);
+  },
+
+  _prune(t) {
+    for (let i = this.voices.length - 1; i >= 0; i--)
+      if (this.voices[i].end <= t) this.voices.splice(i, 1);
+  },
+
+  // One stinger at ctx time `when`: polyphony cap, round-robin, duck (4.1).
+  playStinger(when) {
+    if (!this.ready) return;
+    this._prune(when);
+    if (this.voices.length >= Config.AUDIO_POLYPHONY) {     // cap: fade the oldest (4.1)
+      const old = this.voices.shift();
+      if (old) old.gain.gain.setTargetAtTime(0, when, 0.05);
+    }
+    const N = Config.AUDIO_STINGERS;                        // round-robin, no immediate repeat (4.1)
+    let i = (this.stingerIdx + 1) % N;
+    if (i === this.lastStinger && N > 1) i = (i + 1) % N;
+    this.stingerIdx = i; this.lastStinger = i;
+    this._duck(when);
+
+    const g = this.ctx.createGain(); g.connect(this.master);
+    let end = when + 0.1;
+    const pool = this.buffers.stingers;
+    const buf = pool.length ? pool[i % pool.length] : null;
+    if (buf) {                                              // real asset -> play it
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf; src.connect(g); g.gain.value = 1;
+      src.start(when); end = when + buf.duration;
+    } else if (Config.DEV_PLACEHOLDER_AUDIO) {              // synth PLACEHOLDER bell
+      end = this._phBell(g, this.phFreqs[i % this.phFreqs.length], when,
+                         Config.PH_STINGER_GAIN, Config.PH_STINGER_DECAY);
+    } else { return; }                                      // armed + silent
+    this.voices.push({ gain: g, end: end });
+  },
+
+  playDisc(when) {
+    if (!this.ready) return;
+    const g = this.ctx.createGain(); g.connect(this.master);
+    if (this.buffers.disc) {                                // real asset -> play it
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.buffers.disc; src.connect(g); g.gain.value = 1; src.start(when);
+    } else if (Config.DEV_PLACEHOLDER_AUDIO) {              // PLACEHOLDER swell: root + fifth + octave
+      [110, 164.81, 220].forEach((f, k) =>
+        this._phBell(g, f, when, Config.PH_DISC_GAIN * (k === 0 ? 1 : 0.6), Config.PH_DISC_DECAY));
+    }
+  },
+
+  // ---- synthesized placeholders (NOT canon; review only) -------------------
+  _phBell(out, freq, when, peak, decay) {
+    const o = this.ctx.createOscillator(), e = this.ctx.createGain();
+    o.type = "triangle"; o.frequency.value = freq;
+    o.connect(e); e.connect(out);
+    e.gain.setValueAtTime(0.0001, when);
+    e.gain.exponentialRampToValueAtTime(peak, when + 0.008);
+    e.gain.exponentialRampToValueAtTime(0.0001, when + decay);
+    o.start(when); o.stop(when + decay + 0.05);
+    return when + decay;
+  },
+
+  _startDrone() {
+    if (this.buffers.drone) { this._droneFromBuffer(); return; }
+    if (!Config.DEV_PLACEHOLDER_AUDIO) return;              // silent: no drone source
+    [Config.PH_DRONE_HZ, Config.PH_DRONE_HZ * 1.5].forEach((f) => {   // PLACEHOLDER: root + fifth
+      const o = this.ctx.createOscillator();
+      o.type = "sine"; o.frequency.value = f;
+      o.connect(this.droneGain); o.start();
+    });
+    this.droneBase = Config.PH_DRONE_GAIN;
+    this.droneGain.gain.setTargetAtTime(this.droneBase, this.ctx.currentTime, 0.6);
+  },
+
+  _droneFromBuffer() {
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.buffers.drone; src.loop = true;       // gapless loop (brief 4.x)
+    src.connect(this.droneGain); src.start();
+    this.droneBase = 1;
+    this.droneGain.gain.setTargetAtTime(this.droneBase, this.ctx.currentTime, 0.6);
+  },
+
+  // ---- asset hook (OI-3): load if present, otherwise stay silent -----------
+  async _loadAssets() {
+    const tryLoad = async (urls) => {
+      for (const u of urls) {
+        try {
+          const r = await fetch(u); if (!r.ok) continue;
+          return await this.ctx.decodeAudioData(await r.arrayBuffer());
+        } catch (_) { /* absent / undecodable -> next candidate */ }
+      }
+      return null;
+    };
+    const ex = ["webm", "mp3", "ogg", "wav"];
+    const set = (n) => ex.map((e) => "audio/" + n + "." + e);
+    const drone = await tryLoad(set("drone"));
+    if (drone) { this.buffers.drone = drone; if (this.droneBase === 0) this._droneFromBuffer(); }
+    for (let i = 1; i <= Config.AUDIO_STINGERS; i++) {
+      const b = await tryLoad(set("stinger-" + i));
+      if (b) this.buffers.stingers[i - 1] = b;
+    }
+    this.buffers.disc = await tryLoad(set("disc-complete"));
+  },
+};
+
 /* ---- Boot ------------------------------------------------------------------- */
 const overlay = document.getElementById("overlay");
 const canvas = document.getElementById("field");
@@ -878,6 +1103,17 @@ Field.init(canvas);
 Mute.init(document.getElementById("mute"));
 
 Anim.reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+// AudioContext stays suspended until the first user gesture (brief 4.4). Arm it
+// (start the drone) on the first interaction anywhere; capture phase runs before
+// the seat handlers so even the first ceremony is grid-aligned. Idempotent.
+const armAudio = () => {
+  Audio.unlock();
+  window.removeEventListener("pointerdown", armAudio, true);
+  window.removeEventListener("keydown", armAudio, true);
+};
+window.addEventListener("pointerdown", armAudio, true);
+window.addEventListener("keydown", armAudio, true);
 
 function layout() {
   const w = window.innerWidth, h = window.innerHeight;

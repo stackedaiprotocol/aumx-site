@@ -16,7 +16,7 @@ tooling and docs (`docs/`, `fonts/` sources, `README`) are not part of the deplo
 | 1 Static composition | **CONFIRMED (sealed)** by Human Architect | discs, seats, tilt, wordmark, creed, mute geometry; rev 2 composition amendments |
 | 2 Field | **CONFIRMED (sealed)** by Human Architect | particles, turbulence, coherence, seeded idle flicker |
 | 3 Interaction | **CONFIRMED (sealed)** by Human Architect | state machine, proposal, ceremony drafting + burst, sealed persistence, coherence steps |
-| 4 Audio engine | in progress | context, drone, quantized scheduler, stinger pool, voice mgmt, mute bind |
+| 4 Audio engine | **BUILT - awaiting confirmation gate** | context, drone, quantized scheduler, stinger pool, voice mgmt, mute bind, dev placeholder tones |
 | 5 Arc | not started | disc completions, finale, hold, scored reset |
 | 6 Hardening | not started | touch, keyboard, reduced motion, performance, asset integration |
 
@@ -190,24 +190,67 @@ simulated resize.
 
 ---
 
-## Audio (P-2 / 4.x) - engine not built until Phase 4
+## Phase 4 - audio engine (brief 4.1 / 4.2 / 4.4) - BUILT, silent by default
 
-- Assets NOT delivered (Asset NOT READY). Engine will ship **audio-ready and silent by default**.
-- Dev-only placeholder tones behind `Config.DEV_PLACEHOLDER_AUDIO`, **default OFF for deploy** (P-2).
-  Not yet present (Phase 4).
-- Optional **disc-complete voice** included in the engine contract: loaded/fired if
-  `/audio/disc-complete.*` present, silent if absent (plan amendment 2).
-- Audio constants to be declared on asset delivery (OI-3); current placeholders pending the
-  delivered drone:
+Separable module `Audio` (C-7, forkable for SS-BOOM-001). One `AudioContext`, **suspended until the
+first user gesture** (4.4) - armed on the first pointer/keydown (capture phase, so even the first
+ceremony is grid-aligned) and on any seat press / mute toggle. **Silent by default**: real assets are
+OI-3 (NOT delivered), used if present, otherwise the engine stays armed and silent.
 
-  | Constant | Value | Status |
-  |---|---|---|
-  | BPM | TBD | declared on drone delivery |
-  | Bar length (beats) | TBD | declared on drone delivery |
-  | Key | TBD | declared on drone delivery |
-  | Quantize (one-shots) | next half-bar (bar acceptable) | per brief 4.2 |
-  | Quantize (finale) | next full bar | per brief 4.2 |
-  | Polyphony cap | 6 | per brief 4.1 |
+**Quantized scheduler (4.2):** the `Clock.nextBurst()` seam now resolves against the AudioContext
+clock. Each burst is pulled to the next **half-bar** boundary (`bar / AUDIO_QUANTIZE_DIV`) and the
+stinger is scheduled there; the returned time drives the visual draft so the burst lands exactly on
+the beat. The finale path (`scheduleFinale`) aligns on the next **full bar** (Phase 5 wires the visual
+finale to it). The grid is anchored at drone start; timing is identical whether or not sound is audible.
+
+**Stinger pool / voice management (4.1):** round-robin over the pool with **no immediate repeat**, each
+voice through its own gain into master so overlaps mix, **polyphony cap 6** (oldest voice gain-faded).
+Anti-retrigger remains enforced by the Phase-3 state machine (one ceremony -> one burst -> one stinger).
+Optional **drone duck** (master drone dips to `AUDIO_DUCK` then releases) while a stinger rings.
+
+**Mute (4.4):** the drawn geometric toggle binds to the **master gain** (ramped to 0 / back), held in
+memory only (no storage APIs, C-3).
+
+**Disc-complete voice (brief 4.3 / amendment 2):** `Audio.disc()` fires on disc completion, quantized
+to the next full bar; plays `/audio/disc-complete.*` if present, the placeholder swell under the dev
+flag, or silence.
+
+### Audio constants
+
+`AUDIO_BPM` / `AUDIO_BEATS_PER_BAR` / key are **placeholder grid values for review** - the real values
+are declared on drone delivery (OI-3) and the drone defines the true tempo/key the grid locks to.
+
+| Constant | Value | Status / source |
+|---|---|---|
+| BPM | 72 (placeholder) | `Config.AUDIO_BPM`; real value on drone delivery (OI-3) |
+| Bar length (beats) | 4 (placeholder) | `Config.AUDIO_BEATS_PER_BAR`; real value on drone delivery |
+| Key | A (placeholder drone root A1=55Hz) | placeholder only; real key on drone delivery |
+| Quantize (one-shots) | next half-bar | `Config.AUDIO_QUANTIZE_DIV = 2`, per brief 4.2 |
+| Quantize (finale / disc voice) | next full bar | `scheduleFinale` / `Audio.disc`, per brief 4.2 |
+| Polyphony cap | 6 | `Config.AUDIO_POLYPHONY`, per brief 4.1 |
+| Stinger pool size | 5 | `Config.AUDIO_STINGERS` (range 3-6, brief 4.1) |
+| Master gain (unmuted) | 0.5 | `Config.AUDIO_MASTER` |
+| Drone duck / release | x0.7 / 0.45 s | `Config.AUDIO_DUCK` / `AUDIO_DUCK_REL` |
+
+### Placeholder audio flag (P-2)
+
+- `Config.DEV_PLACEHOLDER_AUDIO` = **`false`** (committed state). MUST stay OFF for any deploy.
+- When ON: synthesized placeholder tones (clearly NOT canon) - a continuous root+fifth sine drone, a
+  triangle-bell stinger pool (pentatonic A C D E G), and a root+fifth+octave disc swell - so the
+  quantized timing is demonstrable in review without assets.
+- When OFF (default) and no `/audio/` assets: engine is armed and **silent**, grid timing unchanged.
+
+### Asset hook (OI-3)
+
+On unlock the engine probes `audio/drone.*`, `audio/stinger-1..5.*`, `audio/disc-complete.*`
+(`webm/mp3/ogg/wav`); any found are decoded and used, the drone loops gaplessly. Absent assets fail
+silently. (Under `file://`, fetch is blocked, so review uses the placeholder flag; a deployed host
+serves the assets normally.)
+
+Validation (headless Web Audio stub): half-bar grid math, `nextDivision` boundaries, burst on-grid and
+>= now + draft duration with the visual time tracking the ctx delta, round-robin with no immediate
+repeat across the whole pool, polyphony cap saturating at 6, and the silent path still grid-aligned.
+End-to-end interaction+audio sim seals a full disc with grid-timed bursts and no exceptions.
 
 ---
 
@@ -215,8 +258,8 @@ simulated resize.
 
 - [ ] Idle identical on every load (deterministic) - PRNG seeded; verify on reload (Phase 2 flicker pending)
 - [x] Hover proposes / exit reverts (Phase 3) - verified in headless sim
-- [~] Rapid clicks -> one ceremony (Phase 3, verified); one stinger pending audio (Phase 4)
-- [ ] Bursts land on quantized boundary (Phase 4)
+- [x] Rapid clicks -> one ceremony, one stinger (Phase 3 state machine + Phase 4 audio) - verified in sim
+- [x] Bursts land on quantized boundary (Phase 4) - half-bar grid verified in headless audio sim
 - [ ] Full 20-seat arc -> 3 disc completions -> finale -> scored reset (Phase 5)
 - [x] Zero network requests beyond the file and `/audio/` (no CDN / third-party; font embedded)
 - [x] Standing text = wordmark + the one sentence, nothing else
