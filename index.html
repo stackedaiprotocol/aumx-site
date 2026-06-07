@@ -85,7 +85,8 @@
   .mute svg { width: 100%; height: 100%; display: block; }
 
   /* ---- Keyboard focus on seats (brief 5): the proposal brightening is the
-     primary cue; this faint ring is the supplementary visible-focus indicator. */
+     primary cue; this faint ring is the supplementary visible-focus indicator.
+     Monochrome per C-1 - white at 60% alpha reads as grey over black, no hue. */
   #overlay [role="button"]:focus { outline: none; }
   #overlay [role="button"]:focus-visible {
     outline: 1px solid rgba(255, 255, 255, 0.6); outline-offset: 2px;
@@ -254,7 +255,7 @@ const Config = {
   AUDIO_BEATS_PER_BAR: 4,     // placeholder meter; declared on drone delivery (OI-3)
   AUDIO_QUANTIZE_DIV:  2,     // one-shots quantize to bar / this -> half-bar (brief 4.2)
   AUDIO_POLYPHONY:     6,     // max concurrent stinger voices; oldest fades (brief 4.1)
-  AUDIO_STINGERS:      5,     // stinger pool size (range 3-6, brief 4.1)
+  AUDIO_STINGERS:      6,     // stinger pool size (range 3-6, brief 4.1; assets stinger-01..06)
   AUDIO_DUCK:          0.7,   // drone gain multiplier while a stinger rings (optional duck)
   AUDIO_DUCK_REL:      0.45,  // drone duck release toward baseline (sec)
   // Placeholder voice params (synth only; NOT canon - real assets are OI-3):
@@ -1138,8 +1139,8 @@ const Audio = {
   gridOrigin: 0, beat: 0, bar: 0, div: 0,
   voices: [],                            // live stinger voices, for the polyphony cap
   stingerIdx: 0, lastStinger: -1,
-  buffers: { drone: null, stingers: [], disc: null },
-  phFreqs: [440.00, 523.25, 587.33, 659.25, 783.99],  // PLACEHOLDER pentatonic (A C D E G)
+  buffers: { drone: null, stingers: [], disc: null, finale: null },
+  phFreqs: [440.00, 523.25, 587.33, 659.25, 783.99, 880.00],  // PLACEHOLDER pentatonic (A C D E G A)
 
   // First gesture: create + resume the context, anchor the bar grid, start the
   // drone (asset or placeholder), and kick off the async asset probe. Idempotent.
@@ -1190,7 +1191,7 @@ const Audio = {
   scheduleFinale(visualNow) {
     const now = this.ctx.currentTime;
     const target = this.nextDivision(now + Config.DRAFT_DURATION, this.bar);
-    this.playDisc(target);
+    this.playFinale(target);
     return visualNow + (target - now);
   },
 
@@ -1254,6 +1255,20 @@ const Audio = {
     }
   },
 
+  // Finale voice (brief 4.3): the full-arc resolution. Real asset if present,
+  // else a fuller/longer PLACEHOLDER swell, else silent.
+  playFinale(when) {
+    if (!this.ready) return;
+    const g = this.ctx.createGain(); g.connect(this.master);
+    if (this.buffers.finale) {                              // real asset -> play it
+      const src = this.ctx.createBufferSource();
+      src.buffer = this.buffers.finale; src.connect(g); g.gain.value = 1; src.start(when);
+    } else if (Config.DEV_PLACEHOLDER_AUDIO) {              // PLACEHOLDER: root+fifth+octave+third, longer
+      [110, 164.81, 220, 277.18].forEach((f, k) =>
+        this._phBell(g, f, when, Config.PH_DISC_GAIN * (k === 0 ? 1 : 0.55), Config.PH_DISC_DECAY * 1.6));
+    }
+  },
+
   // ---- synthesized placeholders (NOT canon; review only) -------------------
   _phBell(out, freq, when, peak, decay) {
     const o = this.ctx.createOscillator(), e = this.ctx.createGain();
@@ -1297,15 +1312,19 @@ const Audio = {
       }
       return null;
     };
+    // Asset delivery contract (brief 4.3) - exact base names, any of these
+    // extensions: drone.*, stinger-01..06.* (zero-padded), disc-complete.*, finale.*
     const ex = ["webm", "mp3", "ogg", "wav"];
     const set = (n) => ex.map((e) => "audio/" + n + "." + e);
+    const pad2 = (i) => (i < 10 ? "0" + i : "" + i);
     const drone = await tryLoad(set("drone"));
     if (drone) { this.buffers.drone = drone; if (this.droneBase === 0) this._droneFromBuffer(); }
     for (let i = 1; i <= Config.AUDIO_STINGERS; i++) {
-      const b = await tryLoad(set("stinger-" + i));
+      const b = await tryLoad(set("stinger-" + pad2(i)));   // stinger-01 .. stinger-06
       if (b) this.buffers.stingers[i - 1] = b;
     }
     this.buffers.disc = await tryLoad(set("disc-complete"));
+    this.buffers.finale = await tryLoad(set("finale"));
   },
 };
 

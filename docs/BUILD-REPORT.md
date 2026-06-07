@@ -211,9 +211,10 @@ Optional **drone duck** (master drone dips to `AUDIO_DUCK` then releases) while 
 **Mute (4.4):** the drawn geometric toggle binds to the **master gain** (ramped to 0 / back), held in
 memory only (no storage APIs, C-3).
 
-**Disc-complete voice (brief 4.3 / amendment 2):** `Audio.disc()` fires on disc completion, quantized
-to the next full bar; plays `/audio/disc-complete.*` if present, the placeholder swell under the dev
-flag, or silence.
+**Disc-complete + finale voices (brief 4.3):** `Audio.disc()` fires on disc completion and
+`Audio.scheduleFinale()` (Phase 5) fires on the third-disc resolution, both quantized to the next full
+bar. Each plays its real asset (`disc-complete.*` / `finale.*`) if present, a distinct placeholder
+swell under the dev flag, or silence.
 
 ### Audio constants
 
@@ -228,7 +229,7 @@ are declared on drone delivery (OI-3) and the drone defines the true tempo/key t
 | Quantize (one-shots) | next half-bar | `Config.AUDIO_QUANTIZE_DIV = 2`, per brief 4.2 |
 | Quantize (finale / disc voice) | next full bar | `scheduleFinale` / `Audio.disc`, per brief 4.2 |
 | Polyphony cap | 6 | `Config.AUDIO_POLYPHONY`, per brief 4.1 |
-| Stinger pool size | 5 | `Config.AUDIO_STINGERS` (range 3-6, brief 4.1) |
+| Stinger pool size | 6 | `Config.AUDIO_STINGERS` (range 3-6, brief 4.1; assets stinger-01..06) |
 | Master gain (unmuted) | 0.5 | `Config.AUDIO_MASTER` |
 | Drone duck / release | x0.7 / 0.45 s | `Config.AUDIO_DUCK` / `AUDIO_DUCK_REL` |
 
@@ -236,16 +237,41 @@ are declared on drone delivery (OI-3) and the drone defines the true tempo/key t
 
 - `Config.DEV_PLACEHOLDER_AUDIO` = **`false`** (committed state). MUST stay OFF for any deploy.
 - When ON: synthesized placeholder tones (clearly NOT canon) - a continuous root+fifth sine drone, a
-  triangle-bell stinger pool (pentatonic A C D E G), and a root+fifth+octave disc swell - so the
-  quantized timing is demonstrable in review without assets.
+  triangle-bell stinger pool (pentatonic A C D E G A, six voices), a root+fifth+octave disc swell, and
+  a fuller/longer root+fifth+octave+third finale swell - so the quantized timing is demonstrable in
+  review without assets.
 - When OFF (default) and no `/audio/` assets: engine is armed and **silent**, grid timing unchanged.
 
-### Asset hook (OI-3)
+### Asset delivery contract (brief 4.3, OI-3)
 
-On unlock the engine probes `audio/drone.*`, `audio/stinger-1..5.*`, `audio/disc-complete.*`
-(`webm/mp3/ogg/wav`); any found are decoded and used, the drone loops gaplessly. Absent assets fail
-silently. (Under `file://`, fetch is blocked, so review uses the placeholder flag; a deployed host
-serves the assets normally.)
+On the first gesture the engine probes the `/audio/` directory for the exact base names below, trying
+extensions in order `webm`, `mp3`, `ogg`, `wav` (first match wins). Found files are decoded and used;
+absent files fail silently (engine stays armed and silent). The **operator drops files matching these
+names into `/audio/`** - that is the only integration step; they are picked up on the next load.
+
+| Base name | Role | Behaviour |
+|---|---|---|
+| `drone` | continuous bed | looped gaplessly into the drone gain |
+| `stinger-01` .. `stinger-06` | seal one-shots | round-robin pool, no immediate repeat, on the half-bar |
+| `disc-complete` | per-disc voice | fired when a disc completes, on the next full bar |
+| `finale` | full-arc voice | fired on the third-disc resolution, on the next full bar |
+
+Exact filenames the operator should deliver (any one extension each):
+
+```
+audio/drone.{webm|mp3|ogg|wav}
+audio/stinger-01.{webm|mp3|ogg|wav}
+audio/stinger-02.{webm|mp3|ogg|wav}
+audio/stinger-03.{webm|mp3|ogg|wav}
+audio/stinger-04.{webm|mp3|ogg|wav}
+audio/stinger-05.{webm|mp3|ogg|wav}
+audio/stinger-06.{webm|mp3|ogg|wav}
+audio/disc-complete.{webm|mp3|ogg|wav}
+audio/finale.{webm|mp3|ogg|wav}
+```
+
+(Under `file://`, fetch is blocked, so review uses the placeholder flag; a deployed host serves the
+assets normally.)
 
 Validation (headless Web Audio stub): half-bar grid math, `nextDivision` boundaries, burst on-grid and
 >= now + draft duration with the visual time tracking the ctx delta, round-robin with no immediate
