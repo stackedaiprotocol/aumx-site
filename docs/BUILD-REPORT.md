@@ -16,8 +16,8 @@ tooling and docs (`docs/`, `fonts/` sources, `README`) are not part of the deplo
 | 1 Static composition | **CONFIRMED (sealed)** by Human Architect | discs, seats, tilt, wordmark, creed, mute geometry; rev 2 composition amendments |
 | 2 Field | **CONFIRMED (sealed)** by Human Architect | particles, turbulence, coherence, seeded idle flicker |
 | 3 Interaction | **CONFIRMED (sealed)** by Human Architect | state machine, proposal, ceremony drafting + burst, sealed persistence, coherence steps |
-| 4 Audio engine | **BUILT - awaiting confirmation gate** | context, drone, quantized scheduler, stinger pool, voice mgmt, mute bind, dev placeholder tones |
-| 5 Arc | not started | disc completions, finale, hold, scored reset |
+| 4 Audio engine | **CONFIRMED (sealed)** by Human Architect | context, drone, quantized scheduler, stinger pool, voice mgmt, mute bind, dev placeholder tones |
+| 5 Arc | in progress | disc completions, finale, axis alignment, hold, scored reset |
 | 6 Hardening | not started | touch, keyboard, reduced motion, performance, asset integration |
 
 ---
