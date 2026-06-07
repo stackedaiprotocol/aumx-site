@@ -9,8 +9,8 @@
     [x] Phase 2  Field: particles, turbulence, coherence, seeded idle flicker.
     [x] Phase 3  Interaction: state machine, proposal, ceremony drafting + burst, sealed persistence.
     [x] Phase 4  Audio engine: context, drone, quantized scheduler, stinger pool, voice mgmt, mute.
-    [~] Phase 5  Arc: disc completions, finale, axis alignment, hold, scored reset.
-    [ ] Phase 6  Hardening: touch, keyboard, reduced motion, performance, asset integration.
+    [x] Phase 5  Arc: disc completions, finale, axis alignment, hold, scored reset.
+    [~] Phase 6  Hardening: touch, keyboard, reduced motion, performance, asset integration.
 
   Typeface: Space Mono (Colophon Foundry & Benjamin Critton), SIL OFL, embedded as base64 woff2.
   Seal geometry is PROVISIONAL pending OI-2. Datum Cross is the only confirmed canonical mark.
@@ -84,6 +84,13 @@
   .mute:hover, .mute:focus-visible { opacity: 0.95; outline: none; }
   .mute svg { width: 100%; height: 100%; display: block; }
 
+  /* ---- Keyboard focus on seats (brief 5): the proposal brightening is the
+     primary cue; this faint ring is the supplementary visible-focus indicator. */
+  #overlay [role="button"]:focus { outline: none; }
+  #overlay [role="button"]:focus-visible {
+    outline: 1px solid rgba(255, 255, 255, 0.6); outline-offset: 2px;
+  }
+
   /* ---- Reduced motion: composition is already static in Phase 1 ---------------- */
   @media (prefers-reduced-motion: reduce) { :root { --aumx-reduced: 1; } }
 </style>
@@ -91,7 +98,7 @@
 <body>
   <div id="stage">
     <canvas id="field" aria-hidden="true"></canvas>
-    <svg id="overlay" preserveAspectRatio="xMidYMid slice" aria-label="AUMX three-disc governance architecture" role="img"></svg>
+    <svg id="overlay" preserveAspectRatio="xMidYMid slice" aria-label="AUMX three-disc governance architecture. AI may propose; humans confirm each seat." role="group"></svg>
   </div>
 
   <div class="wordmark" aria-label="AUMX">AUMX</div>
@@ -227,6 +234,14 @@ const Config = {
   FINALE_HOLD:   4.0,        // resolved hold (sec; brief ~4s)
   FINALE_RESET:  7.0,        // scored reset to clean idle (sec; brief 6-8s)
   FINALE_AXIS_O: 0.85,       // brightness of the alignment axis line at full
+
+  // ---- Performance adaptation (brief 5) ----
+  // If the frame rate sits under budget for a sustained window, shed particles
+  // (down to a floor) so the field keeps a smooth >= 30fps on weaker hardware.
+  PERF_FPS_MIN:     50,      // below this sustained -> adapt down (desktop target 60)
+  PERF_WINDOW:      1.0,     // fps sampling window (sec)
+  PERF_OVER_BUDGET: 2.0,     // sustained under-budget time before shedding (sec)
+  PERF_DOWNSCALE:   0.8,     // particle multiplier applied on each adaptation step
 
   // ---- Audio engine (brief 4.1 / 4.2 / 4.4) ----
   // SILENT BY DEFAULT. Real assets are OI-3 (NOT delivered): used if present,
@@ -432,8 +447,7 @@ const Scene = {
     const sg = el("g", { "data-seats": d.id });
     for (const s of d.seats) {
       const seat = el("g", { "data-seat": s.id });
-      seat.setAttribute("role", "img");
-      seat.setAttribute("aria-label", "Seat " + s.seatNo + ", " + d.name + " disc");
+      seat.setAttribute("aria-hidden", "true");   // decorative; the accessible name lives on the hit button
       s._outer = el("polygon", {              // outer instrument body
         points: hexPoints(s.x, s.y, s.r, Config.SEAT_HEX_SQUASH),
         fill: "none", stroke: L, "stroke-opacity": s.op.toFixed(3), "stroke-width": "1",
@@ -443,10 +457,14 @@ const Scene = {
         fill: "none", stroke: L,
         "stroke-opacity": (s.op * Config.SEAT_O_INNER).toFixed(3), "stroke-width": "0.7",
       });
-      // transparent hit-area (the overlay is pointer-events:none; seats opt back in)
+      // transparent hit-area (the overlay is pointer-events:none; seats opt back in).
+      // It is the focusable button (brief 5): tab order follows DOM order, which is
+      // GUILD seats first ... AGENDA last, i.e. GUILD 1 -> AGENDA 6.
       s._hit = el("polygon", {
         points: hexPoints(s.x, s.y, s.r * 1.5, Config.SEAT_HEX_SQUASH),
         fill: "#000", "fill-opacity": "0", "pointer-events": "all",
+        tabindex: "0", role: "button", "aria-pressed": Session.sealed.has(s.id) ? "true" : "false",
+        "aria-label": "Confirm seat " + s.seatNo + ", " + d.name + " disc",
       });
       s._hit.style.cursor = "pointer";
       s._group = seat;
@@ -606,6 +624,18 @@ const Field = {
 
   // reduced-motion / pre-anim: obsidian base + faint band only, no particles
   renderStatic() { this._base(this.ctx); },
+
+  // performance adaptation (brief 5): shed particles toward the floor. Truncating
+  // keeps the seeded head of the stream, so the field stays deterministic for a
+  // given final count. Returns false once the floor is reached.
+  downscale() {
+    const floor = Math.max(1, (Config.FIELD_COUNT_MIN * 0.6) | 0);
+    if (this.particles.length <= floor) return false;
+    const n = Math.max(floor, Math.floor(this.particles.length * Config.PERF_DOWNSCALE));
+    if (n >= this.particles.length) return false;
+    this.particles.length = n;
+    return true;
+  },
 };
 
 /* ---- Seats idle flicker: seeded breathing + occasional per-disc pulse -------
@@ -653,6 +683,7 @@ const Seats = {
 /* ---- Anim: single rAF loop; deterministic from load; pauses on hidden tab --- */
 const Anim = {
   T: 0, last: 0, running: false, reduced: false,
+  _frames: 0, _accum: 0, _over: 0,                    // fps monitor for perf adaptation (brief 5)
   start() {
     if (this.running || this.reduced) return;
     this.running = true;
@@ -660,11 +691,22 @@ const Anim = {
     requestAnimationFrame(Anim._tick);
   },
   stop() { this.running = false; },
+  _perf(dt) {
+    this._frames++; this._accum += dt;
+    if (this._accum < Config.PERF_WINDOW) return;
+    const fps = this._frames / this._accum;
+    if (fps < Config.PERF_FPS_MIN) {                  // under budget: count it; shed once sustained
+      this._over += this._accum;
+      if (this._over >= Config.PERF_OVER_BUDGET) { Field.downscale(); this._over = 0; }
+    } else { this._over = 0; }
+    this._frames = 0; this._accum = 0;
+  },
   _tick(now) {
     if (!Anim.running) return;
     let dt = (now - Anim.last) / 1000;
     Anim.last = now;
     if (dt > 0.05) dt = 0.05;                          // cap jank / hidden-tab gaps
+    Anim._perf(dt);
     Anim.T += dt;
     Finale.update(Anim.T, dt);                         // owns coherence while the arc resolves
     Field.step(Anim.T, dt);
@@ -758,6 +800,9 @@ const Ceremony = {
   _seal(s, d) {
     s.state = "sealed"; s.sealT = Anim.T;          // register flicker handled in Seats.update
     this.drawProgress(s, 1);
+    if (s._hit) s._hit.setAttribute("aria-pressed", "true");   // keyboard/SR: seat confirmed
+    Machine.hideLabel();
+    if (Machine.touchArmed === s) Machine.touchArmed = null;   // touch: clear the armed seat on confirm
     Session.sealed.add(s.id);
     Field.stepCoherence(Config.COH_SEAT_STEP);     // downstream threads snap a coherence step
     if (d.seats.every((x) => x.state === "sealed")) DiscComplete.fire(d);
@@ -917,31 +962,46 @@ const Finale = {
     }
   },
 
+  _rm(n) { if (n && n.parentNode) n.parentNode.removeChild(n); },
+
   _finish() {
-    for (let i = 0; i < this.fadeEls.length; i++) {
-      const n = this.fadeEls[i]; if (n.parentNode) n.parentNode.removeChild(n);
-    }
-    this.fadeEls = []; this.axis = null;
+    this._rm(this.axis); this.axis = null; this.fadeEls = [];
     for (const d of Geometry.discs) {
+      this._rm(d._trace); this._rm(d._discSeal && d._discSeal.g);
       d._trace = null; d._discSeal = null; d.complete = false;
-      for (const s of d.seats) { s._seal = null; s._sealEls = null; s.state = "idle"; s.sealT = 0; }
+      for (const s of d.seats) {
+        this._rm(s._seal); s._seal = null; s._sealEls = null;
+        s.state = "idle"; s.sealT = 0;
+        if (s._hit) s._hit.setAttribute("aria-pressed", "false");   // keyboard: seat re-armable
+      }
     }
     Session.sealed.clear(); Session.completed.clear();       // released only now -> clean idle, not reboot
     Field.coherence = 0; Field.cohTarget = 0;
     this.mix = 1; this.state = "off";
   },
 
-  // reduced motion: no loop to animate the arc; show the resolved aligned state.
+  // Reduced motion (brief 5): no rAF loop to animate the arc. Resolve to the
+  // aligned state, hold it, then clear discretely back to readiness (a state
+  // change, not an animation) so the cycle can run again without a reload.
   _reducedResolve() {
     this._beginAlign();
-    this.axis.setAttribute("stroke-dashoffset", "0");        // axis fully drawn
+    this.axis.setAttribute("stroke-dashoffset", "0");        // axis fully drawn (aligned)
     this.state = "hold";
+    setTimeout(() => {
+      this._finish();
+      Seats.update(Anim.T);                                  // seats settle to dim idle
+      Field.renderStatic();
+    }, Config.FINALE_HOLD * 1000);
   },
 };
 
-/* ---- Machine: hover proposes, click confirms (brief 3.4) -------------------- */
+/* ---- Machine: hover/focus proposes, click/Enter confirms (brief 3.4 / 5) ----
+   Pointer (mouse/pen): hover proposes, exit reverts, press confirms.
+   Touch: a TWO-STEP - first tap proposes + labels, second tap on the same seat
+   confirms, a tap elsewhere reverts (brief 5). Keyboard: seats are buttons in
+   tab order GUILD 1 -> AGENDA 6, focus mirrors PROPOSED, Enter/Space confirms.   */
 const Machine = {
-  label: null,
+  label: null, touchArmed: null, touchArmedD: null, _wired: false,
   bind(geo) {
     const t = el("text", {
       x: 0, y: 0, "text-anchor": "middle",
@@ -951,26 +1011,56 @@ const Machine = {
     t.style.display = "none";
     overlay.appendChild(t);
     this.label = t;
+    this.touchArmed = null; this.touchArmedD = null;        // a rebuild (resize) drops any armed tap
     for (const d of geo.discs) for (const s of d.seats) {
       const hit = s._hit, sd = s, dd = d;
-      hit.addEventListener("pointerenter", () => this.onEnter(sd, dd));
-      hit.addEventListener("pointerleave", () => this.onLeave(sd, dd));
-      hit.addEventListener("pointerdown", (e) => { e.preventDefault(); this.onDown(sd, dd); });
+      hit._seat = sd;                                        // tag for the global touch-revert check
+      hit.addEventListener("pointerenter", (e) => this.onEnter(sd, dd, e));
+      hit.addEventListener("pointerleave", (e) => this.onLeave(sd, dd, e));
+      hit.addEventListener("pointerdown",  (e) => { e.preventDefault(); this.onDown(sd, dd, e); });
+      hit.addEventListener("focus", () => this._propose(sd, dd));      // keyboard focus = proposal
+      hit.addEventListener("blur",  () => this._revert(sd, dd));
+      hit.addEventListener("keydown", (e) => this.onKey(sd, dd, e));
+    }
+    if (!this._wired) {                                      // once: a touch elsewhere reverts the armed seat
+      window.addEventListener("pointerdown", (e) => {
+        if (e.pointerType === "touch" && this.touchArmed && !(e.target && e.target._seat))
+          { this._revert(this.touchArmed, this.touchArmedD); this.touchArmed = null; }
+      }, true);
+      this._wired = true;
     }
   },
-  onEnter(s, d) {
-    if (s.state === "idle") { s.state = "proposed"; Field.addProposal(s); }   // hover = proposal
-    if (s.state === "proposed" || s.state === "sealed") this.showLabel(s, d); // labels: proposed + sealed
-    if (Anim.reduced) Seats.update(Anim.T);
+  _propose(s, d) {
+    if (s.state === "idle") { s.state = "proposed"; Field.addProposal(s); }
+    if (s.state === "proposed" || s.state === "sealed") this.showLabel(s, d);
+    if (Anim.reduced) Seats.update(Anim.T);                  // no loop under reduced motion: refresh now
   },
-  onLeave(s, d) {
-    if (s.state === "proposed") { s.state = "idle"; Field.clearProposal(s); } // reverts on exit
+  _revert(s, d) {
+    if (s.state === "proposed") { s.state = "idle"; Field.clearProposal(s); }
     this.hideLabel();
     if (Anim.reduced) Seats.update(Anim.T);
   },
-  onDown(s, d) {
-    Audio.unlock();                                     // first gesture arms the AudioContext (4.4)
-    if (s.state === "proposed") Ceremony.start(s, d);   // the human click is the only governed act
+  onEnter(s, d, e) { if (e && e.pointerType === "touch") return; this._propose(s, d); }, // hover only
+  onLeave(s, d, e) { if (e && e.pointerType === "touch") return; this._revert(s, d); },
+  onDown(s, d, e) {
+    Audio.unlock();                                         // first gesture arms the AudioContext (4.4)
+    if (e && e.pointerType === "touch") { this._touchStep(s, d); return; }
+    if (s.state === "proposed") Ceremony.start(s, d);        // mouse/pen: press confirms
+  },
+  _touchStep(s, d) {
+    if (s.state === "sealed" || s.state === "ceremony") return;
+    if (this.touchArmed === s) { Ceremony.start(s, d); this.touchArmed = null; }   // 2nd tap confirms
+    else {                                                   // 1st tap proposes + labels
+      if (this.touchArmed) this._revert(this.touchArmed, this.touchArmedD);
+      this._propose(s, d); this.touchArmed = s; this.touchArmedD = d;
+    }
+  },
+  onKey(s, d, e) {
+    if (e.key !== "Enter" && e.key !== " " && e.key !== "Spacebar") return;
+    e.preventDefault();                                      // Enter/Space confirms; no page scroll
+    Audio.unlock();
+    if (s.state === "idle") this._propose(s, d);             // confirm directly even without a prior hover
+    if (s.state === "proposed") Ceremony.start(s, d);
   },
   showLabel(s, d) {
     const t = this.label; if (!t) return;

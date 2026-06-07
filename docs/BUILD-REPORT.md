@@ -18,7 +18,7 @@ tooling and docs (`docs/`, `fonts/` sources, `README`) are not part of the deplo
 | 3 Interaction | **CONFIRMED (sealed)** by Human Architect | state machine, proposal, ceremony drafting + burst, sealed persistence, coherence steps |
 | 4 Audio engine | **CONFIRMED (sealed)** by Human Architect | context, drone, quantized scheduler, stinger pool, voice mgmt, mute bind, dev placeholder tones |
 | 5 Arc | **CONFIRMED (sealed)** by Human Architect | finale on 3rd disc, axis alignment, ~4s hold, scored 6-8s reset to clean idle |
-| 6 Hardening | in progress | touch two-step, keyboard order + Enter, reduced-motion arc, performance adaptation, asset hook |
+| 6 Hardening | **BUILT - awaiting confirmation gate** | touch two-step, keyboard order + Enter, reduced-motion arc, performance adaptation, asset hook |
 
 ---
 
@@ -292,6 +292,46 @@ ceremony can start (the PBHO cycle repeats).
 
 ---
 
+## Phase 6 - hardening (brief 5) - BUILT
+
+| Parameter | Value | Source |
+|---|---|---|
+| Perf adapt threshold | < 50 fps sustained 2.0 s over a 1.0 s window | `Config.PERF_FPS_MIN` / `PERF_OVER_BUDGET` / `PERF_WINDOW` |
+| Perf shed step | x0.8 particles per step, down to the build floor (~1500) | `Config.PERF_DOWNSCALE` / `Field.downscale` |
+
+**Touch two-step (brief 5):** on a touch pointer the first tap **proposes + labels** and arms the seat,
+a second tap on the same seat **confirms**, tapping a different seat re-arms (reverting the prior), and
+a tap **elsewhere reverts** (a once-wired global capture listener). Touch `pointerenter` does not
+hover-propose, so the two-step is the only touch path. Mouse/pen keep hover-proposes / press-confirms.
+
+**Keyboard (brief 5):** each seat hit is a focusable `role="button"` in tab order **GUILD 1 -> AGENDA 6**
+(DOM order). Focus mirrors PROPOSED (and reacts the field), blur reverts, **Enter/Space confirms**
+(default scroll prevented), `aria-pressed` flips to true on seal and back to false on reset. The overlay
+is a labelled `role="group"` so the buttons are exposed; decorative seat art is `aria-hidden`. A faint
+`:focus-visible` ring supplements the proposal brightening. Mute is a real labelled `<button>`.
+
+**Reduced-motion arc (brief 5):** with no rAF loop, the third disc completion resolves instantly to the
+aligned state, holds, then clears discretely back to readiness (a state change, not an animation) via a
+single `setTimeout` - so the cycle is fully completable and repeatable without motion or a reload.
+Ceremonies still cross-fade straight to SEALED and fire one stinger.
+
+**Performance adaptation (brief 5):** an fps monitor in the loop sheds particles (x0.8 per step, down to
+the floor) after the frame rate sits under budget for a sustained window, keeping a smooth >= 30 fps
+floor on weaker hardware. Truncation keeps the seeded head of the stream, so the field stays
+deterministic for a given final count (C-5).
+
+**Asset integration hook (OI-3):** on first gesture the engine probes `audio/drone.*`,
+`audio/stinger-1..5.*`, `audio/disc-complete.*` (`webm/mp3/ogg/wav`); found files are decoded and used
+(drone loops gaplessly, stingers fill the pool, disc voice on completion), absent ones fail silently.
+Dropping assets into `/audio/` is the only integration step; they are picked up on the next load.
+
+Validation (headless sim): 20 focusable buttons in GUILD->AGENDA order, focus-proposes, Enter and Space
+confirm (other keys no-op); touch first-tap-proposes / second-tap-confirms, seat-switch and tap-elsewhere
+revert, touch-enter does not propose; `downscale` reaches the floor and no-ops there, and the fps monitor
+sheds after a sustained under-budget window. Full-arc regression still green.
+
+---
+
 ## Acceptance criteria (brief 8) - tracking
 
 - [ ] Idle identical on every load (deterministic) - PRNG seeded; verify on reload (Phase 2 flicker pending)
@@ -301,4 +341,4 @@ ceremony can start (the PBHO cycle repeats).
 - [x] Full 20-seat arc -> 3 disc completions -> finale -> ~4s hold -> scored reset to clean idle (Phase 5) - verified in headless sim
 - [x] Zero network requests beyond the file and `/audio/` (no CDN / third-party; font embedded)
 - [x] Standing text = wordmark + the one sentence, nothing else
-- [ ] Usable muted / keyboard-only / reduced motion (Phase 6)
+- [x] Usable muted / keyboard-only / reduced motion (Phase 6) - keyboard buttons, touch two-step, reduced-motion arc; verified in sim
